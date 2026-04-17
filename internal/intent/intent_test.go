@@ -3,6 +3,7 @@ package intent_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ProductOfAmerica/cairn/internal/intent"
@@ -58,5 +59,45 @@ func TestLoad_ParsesValidSpec(t *testing.T) {
 	}
 	if len(bundle.Tasks) != 1 || bundle.Tasks[0].ID != "TASK-001" {
 		t.Errorf("bad tasks: %+v", bundle.Tasks)
+	}
+}
+
+func TestValidate_SchemaHappyPath(t *testing.T) {
+	root := t.TempDir()
+	writeSpec(t, root)
+	bundle, err := intent.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errs := intent.Validate(bundle)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %+v", errs)
+	}
+}
+
+func TestValidate_SchemaRejectsMissingID(t *testing.T) {
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, "requirements"), 0o755)
+	_ = os.WriteFile(
+		filepath.Join(root, "requirements", "bad.yaml"),
+		[]byte("title: no id\ngates:\n  - id: AC-001\n    kind: test\n    producer: {kind: executable}\n"),
+		0o644,
+	)
+	bundle, err := intent.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errs := intent.Validate(bundle)
+	if len(errs) == 0 {
+		t.Fatal("want validation errors")
+	}
+	found := false
+	for _, e := range errs {
+		if e.Kind == "schema" && strings.Contains(e.Message, "id") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want schema error about missing id, got: %+v", errs)
 	}
 }
