@@ -474,14 +474,19 @@ Stores return `*Err`. CLI translates `Code` → exit code; surfaces `Kind` +
 
 - `db.WithTx(ctx, fn)` is the only txn entry point.
 - `BEGIN IMMEDIATE` on entry.
-- On `SQLITE_BUSY` at any point (begin, any statement, commit): retry with
+- On `SQLITE_BUSY` at begin or during `fn`'s statements: retry with
   exponential backoff starting at 10ms, doubling, capped at the 500ms outer
   budget. Exhausted → rollback (if possible), return `CodeSubstrate` with
   `Kind:"busy"`.
-- **Commit-time BUSY** (load-bearing): the commit did not happen; transaction
-  stays open. Retry the commit within the same budget. Exhausted → rollback
-  explicitly, return substrate error. This prevents the "mutation succeeded
-  but caller thinks it didn't" failure mode.
+- **Commit-time BUSY handling** (load-bearing): once a `*sql.Tx.Commit()` returns
+  an error, `database/sql` has atomically marked the transaction done and
+  released its connection — there is no way to retry the commit at the Go layer.
+  Instead, cairn relies on SQLite's `busy_timeout=5000` PRAGMA (set in the DSN
+  in `db.Open`) to spin at the SQLite C layer for up to 5 seconds before
+  propagating BUSY to Go. By that point, a Go-level retry cannot do more. If
+  BUSY still surfaces, `WithTx` returns a `CodeSubstrate` error with
+  `Kind:"busy"` and leaves retry decisions to the caller. This prevents
+  ambiguity: the caller either sees a clean commit or a clear substrate error.
 - Stores never call `Commit()` or `Rollback()`; those are exclusive to
   `WithTx`. Stores return errors; `WithTx` decides.
 
