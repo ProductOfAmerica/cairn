@@ -237,3 +237,58 @@ gates:
 		t.Fatalf("want ref error for AC-999, got: %+v", errs)
 	}
 }
+
+func TestGateDefHash_DeterministicAcrossWhitespace(t *testing.T) {
+	// Same gate, different YAML whitespace. JCS normalizes the JSON form,
+	// so hash must match.
+	g1 := intent.Gate{
+		ID:   "AC-001",
+		Kind: "test",
+		Producer: intent.Producer{
+			Kind: "executable",
+			Config: map[string]any{
+				"command":           []any{"echo", "ok"},
+				"pass_on_exit_code": int64(0),
+			},
+		},
+	}
+	g2 := intent.Gate{
+		ID:   "AC-001",
+		Kind: "test",
+		Producer: intent.Producer{
+			Kind: "executable",
+			Config: map[string]any{
+				"pass_on_exit_code": int64(0),
+				"command":           []any{"echo", "ok"},
+			},
+		},
+	}
+	h1, err := intent.GateDefHash(g1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2, err := intent.GateDefHash(g2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h1 != h2 {
+		t.Fatalf("hash drift across map-key order: h1=%s h2=%s", h1, h2)
+	}
+	if len(h1) != 64 {
+		t.Fatalf("hash should be 64-char hex, got %d: %s", len(h1), h1)
+	}
+}
+
+func TestGateDefHash_ChangesOnSemanticEdit(t *testing.T) {
+	base := intent.Gate{
+		ID: "AC-001", Kind: "test",
+		Producer: intent.Producer{Kind: "executable", Config: map[string]any{"command": []any{"echo"}}},
+	}
+	edited := base
+	edited.Producer.Config = map[string]any{"command": []any{"echo", "ko"}}
+	h1, _ := intent.GateDefHash(base)
+	h2, _ := intent.GateDefHash(edited)
+	if h1 == h2 {
+		t.Fatalf("semantic edit should change hash")
+	}
+}

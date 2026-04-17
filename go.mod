@@ -10,6 +10,8 @@ require gopkg.in/yaml.v3 v3.0.1 // YAML parsing for intent specs
 
 require github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // schema validation for intent specs
 
+require github.com/gowebpki/jcs v1.0.1 // RFC 8785 JCS canonicalization for gate_def_hash
+
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
