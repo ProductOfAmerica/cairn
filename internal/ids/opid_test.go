@@ -17,6 +17,10 @@ func TestValidateOpID(t *testing.T) {
 		{"01hnbxbt9j6mgk3z5r7wvxtm0p", true},  // lowercase not allowed (ULID is uppercase Crockford)
 		{"", true},
 		{"deadbeef", true},
+		{"01HNBXBT9J6MGK3Z5R7WVXTM0I", true}, // Crockford excludes I at a valid length
+		{"01HNBXBT9J6MGK3Z5R7WVXTM0L", true}, // Crockford excludes L
+		{"01HNBXBT9J6MGK3Z5R7WVXTM0O", true}, // Crockford excludes O
+		{"01HNBXBT9J6MGK3Z5R7WVXTM0U", true}, // Crockford excludes U
 	}
 	for _, tc := range cases {
 		err := ids.ValidateOpID(tc.in)
