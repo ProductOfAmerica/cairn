@@ -328,3 +328,36 @@ func TestRelease_FlipsTaskBackToOpen(t *testing.T) {
 		t.Fatalf("status=%s, expected open", status)
 	}
 }
+
+func TestComplete_GatesNotFreshPassConflict(t *testing.T) {
+	h := openDB(t)
+	// Seed: requirement + gate + task requiring the gate + claim + run.
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		_, _ = tx.Exec(`INSERT INTO requirements (id, spec_path, spec_hash, created_at, updated_at)
+		                VALUES ('REQ-1','p','h',0,0)`)
+		_, _ = tx.Exec(`INSERT INTO gates (id, requirement_id, kind, definition_json,
+		                 gate_def_hash, producer_kind, producer_config)
+		                 VALUES ('AC-1','REQ-1','test','{}',
+		                    'abc123def456000000000000000000000000000000000000000000000000abcd',
+		                    'executable','{}')`)
+		_, _ = tx.Exec(`INSERT INTO tasks (id, requirement_id, spec_path, spec_hash,
+		                 depends_on_json, required_gates_json, status, created_at, updated_at)
+		                 VALUES ('T-c','REQ-1','p','h','[]','["AC-1"]','claimed',0,0)`)
+		_, _ = tx.Exec(`INSERT INTO claims (id, task_id, agent_id, acquired_at, expires_at, op_id)
+		                 VALUES ('CL-c','T-c','a',0,9999999999999,'01HNBXBT9J6MGK3Z5R7WVXTM0X')`)
+		_, _ = tx.Exec(`INSERT INTO runs (id, task_id, claim_id, started_at)
+		                 VALUES ('RUN-c','T-c','CL-c',0)`)
+		return nil
+	})
+	clk := clock.NewFake(1_000)
+	err := h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), clk)
+		_, err := store.Complete(task.CompleteInput{
+			OpID: "01HNBXBT9J6MGK3Z5R7WVXTM0Y", ClaimID: "CL-c",
+		})
+		return err
+	})
+	if err == nil {
+		t.Fatal("complete with no verdicts should conflict")
+	}
+}
