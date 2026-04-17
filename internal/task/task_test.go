@@ -264,3 +264,67 @@ func TestClaim_ExpiredLeaseClearedInline(t *testing.T) {
 		t.Fatalf("expected re-claim to succeed after expiry, got: %v", err)
 	}
 }
+
+func TestHeartbeat_ExtendsExpiry(t *testing.T) {
+	h := openDB(t)
+	seedClaimable(t, h, "T-hb", nil)
+
+	clk := clock.NewFake(1_000)
+	var claim task.ClaimResult
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), clk)
+		r, err := store.Claim(task.ClaimInput{
+			OpID: "01HNBXBT9J6MGK3Z5R7WVXTM01", TaskID: "T-hb", AgentID: "a", TTLMs: 10_000,
+		})
+		claim = r
+		return err
+	})
+	clk.Advance(5_000)
+
+	var hbRes task.HeartbeatResult
+	err := h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), clk)
+		r, err := store.Heartbeat(task.HeartbeatInput{
+			OpID: "01HNBXBT9J6MGK3Z5R7WVXTM02", ClaimID: claim.ClaimID,
+		})
+		hbRes = r
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Heartbeat reuses original TTL (10s) from clk.NowMilli()=6000 → expires_at=16000.
+	if hbRes.ExpiresAt != 6_000+10_000 {
+		t.Fatalf("expires_at=%d", hbRes.ExpiresAt)
+	}
+}
+
+func TestRelease_FlipsTaskBackToOpen(t *testing.T) {
+	h := openDB(t)
+	seedClaimable(t, h, "T-rel", nil)
+
+	clk := clock.NewFake(1_000)
+	var claim task.ClaimResult
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), clk)
+		r, err := store.Claim(task.ClaimInput{
+			OpID: "01HNBXBT9J6MGK3Z5R7WVXTM03", TaskID: "T-rel", AgentID: "a", TTLMs: 60_000,
+		})
+		claim = r
+		return err
+	})
+	err := h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), clk)
+		return store.Release(task.ReleaseInput{
+			OpID: "01HNBXBT9J6MGK3Z5R7WVXTM04", ClaimID: claim.ClaimID,
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	_ = h.SQL().QueryRow("SELECT status FROM tasks WHERE id='T-rel'").Scan(&status)
+	if status != "open" {
+		t.Fatalf("status=%s, expected open", status)
+	}
+}
