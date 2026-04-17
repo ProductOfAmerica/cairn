@@ -124,3 +124,79 @@ func swapDriveCase(p string) string {
 	}
 	return p
 }
+
+func TestResolve_WorktreeSharesID(t *testing.T) {
+	d := setupRepo(t)
+	// Need at least one commit before `git worktree add`.
+	if err := os.WriteFile(filepath.Join(d, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, "-C", d, "add", "f")
+	mustGit(t, "-C", d, "-c", "user.email=t@t", "-c", "user.name=t",
+		"commit", "-q", "-m", "c1")
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustGit(t, "-C", d, "worktree", "add", "-q", wt)
+
+	mainID, err := repoid.Resolve(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wtID, err := repoid.Resolve(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mainID != wtID {
+		t.Fatalf("worktree id drifted: main=%s wt=%s", mainID, wtID)
+	}
+}
+
+func TestResolve_BareRepo(t *testing.T) {
+	d := t.TempDir()
+	mustGit(t, "init", "--bare", "-q", d)
+	_, err := repoid.Resolve(d)
+	if err != nil {
+		t.Fatalf("bare repo should resolve, got: %v", err)
+	}
+}
+
+func TestResolve_GitDirEnvRelative(t *testing.T) {
+	// A shell invocation of `git rev-parse --git-common-dir` with GIT_DIR set
+	// to a relative path can produce relative output. Verify filepath.Abs
+	// promotes that to absolute before hashing.
+	d := setupRepo(t)
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	if err := os.Chdir(d); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_DIR", ".git")
+	id, err := repoid.Resolve(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(id) != 64 {
+		t.Fatalf("bad id: %s", id)
+	}
+}
+
+func TestResolve_Symlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require admin on windows")
+	}
+	d := setupRepo(t)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(d, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	viaReal, err := repoid.Resolve(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viaLink, err := repoid.Resolve(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if viaReal != viaLink {
+		t.Fatalf("symlink changes id: real=%s link=%s", viaReal, viaLink)
+	}
+}
