@@ -190,3 +190,140 @@ func (s *Store) Report(in ReportInput) (ReportResult, error) {
 		BoundAt:   boundAt,
 	}, nil
 }
+
+// Verdict is the on-disk shape returned by Latest / History.
+type Verdict struct {
+	ID           string `json:"verdict_id"`
+	RunID        string `json:"run_id"`
+	GateID       string `json:"gate_id"`
+	Status       string `json:"status"`
+	ScoreJSON    string `json:"score_json,omitempty"`
+	ProducerHash string `json:"producer_hash"`
+	GateDefHash  string `json:"gate_def_hash"`
+	InputsHash   string `json:"inputs_hash"`
+	EvidenceID   string `json:"evidence_id,omitempty"`
+	BoundAt      int64  `json:"bound_at"`
+	Sequence     int64  `json:"sequence"`
+}
+
+// LatestResult is the envelope shape for `verdict latest`.
+type LatestResult struct {
+	Verdict *Verdict `json:"verdict"` // nil if no verdicts exist
+	Fresh   bool     `json:"fresh"`
+}
+
+// Latest returns the latest verdict for a gate, with derived freshness.
+func (s *Store) Latest(gateID string) (LatestResult, error) {
+	var curGateHash string
+	err := s.tx.QueryRow(
+		"SELECT gate_def_hash FROM gates WHERE id=?", gateID,
+	).Scan(&curGateHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return LatestResult{}, cairnerr.New(cairnerr.CodeNotFound, "gate_not_found",
+			fmt.Sprintf("gate %q", gateID))
+	}
+	if err != nil {
+		return LatestResult{}, err
+	}
+
+	var v Verdict
+	var score, evID sql.NullString
+	err = s.tx.QueryRow(
+		`SELECT id, run_id, gate_id, status, score_json, producer_hash,
+                gate_def_hash, inputs_hash, evidence_id, bound_at, sequence
+         FROM verdicts WHERE gate_id=?
+         ORDER BY bound_at DESC, sequence DESC LIMIT 1`,
+		gateID,
+	).Scan(&v.ID, &v.RunID, &v.GateID, &v.Status, &score, &v.ProducerHash,
+		&v.GateDefHash, &v.InputsHash, &evID, &v.BoundAt, &v.Sequence)
+	if errors.Is(err, sql.ErrNoRows) {
+		return LatestResult{Verdict: nil, Fresh: false}, nil
+	}
+	if err != nil {
+		return LatestResult{}, err
+	}
+	if score.Valid {
+		v.ScoreJSON = score.String
+	}
+	if evID.Valid {
+		v.EvidenceID = evID.String
+	}
+	fresh := v.GateDefHash == curGateHash && v.Status == "pass"
+	return LatestResult{Verdict: &v, Fresh: fresh}, nil
+}
+
+// History returns up to limit verdicts for a gate, newest first, each with
+// its derived freshness.
+func (s *Store) History(gateID string, limit int) ([]VerdictWithFresh, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var curGateHash string
+	err := s.tx.QueryRow(
+		"SELECT gate_def_hash FROM gates WHERE id=?", gateID,
+	).Scan(&curGateHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, cairnerr.New(cairnerr.CodeNotFound, "gate_not_found",
+			fmt.Sprintf("gate %q", gateID))
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.tx.Query(
+		`SELECT id, run_id, gate_id, status, score_json, producer_hash,
+                gate_def_hash, inputs_hash, evidence_id, bound_at, sequence
+         FROM verdicts WHERE gate_id=?
+         ORDER BY bound_at DESC, sequence DESC LIMIT ?`,
+		gateID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []VerdictWithFresh
+	for rows.Next() {
+		var v Verdict
+		var score, evID sql.NullString
+		if err := rows.Scan(&v.ID, &v.RunID, &v.GateID, &v.Status, &score, &v.ProducerHash,
+			&v.GateDefHash, &v.InputsHash, &evID, &v.BoundAt, &v.Sequence); err != nil {
+			return nil, err
+		}
+		if score.Valid {
+			v.ScoreJSON = score.String
+		}
+		if evID.Valid {
+			v.EvidenceID = evID.String
+		}
+		fresh := v.GateDefHash == curGateHash && v.Status == "pass"
+		out = append(out, VerdictWithFresh{Verdict: v, Fresh: fresh})
+	}
+	return out, rows.Err()
+}
+
+// VerdictWithFresh pairs a verdict with its derived freshness flag.
+type VerdictWithFresh struct {
+	Verdict Verdict `json:",inline"`
+	Fresh   bool    `json:"fresh"`
+}
+
+// IsFreshPass returns (true, nil) iff the latest verdict for gateID has
+// status=pass AND its gate_def_hash matches the current gate row.
+// Called by task.Complete for each required gate.
+func (s *Store) IsFreshPass(gateID string) (bool, string, error) {
+	r, err := s.Latest(gateID)
+	if err != nil {
+		return false, "", err
+	}
+	if r.Verdict == nil {
+		return false, "no_verdict", nil
+	}
+	if r.Fresh {
+		return true, "", nil
+	}
+	if r.Verdict.Status != "pass" {
+		return false, "status_not_pass", nil
+	}
+	return false, "stale", nil
+}

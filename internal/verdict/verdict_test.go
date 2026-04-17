@@ -121,6 +121,18 @@ func putEvidence(t *testing.T, d *db.DB, blobRoot string, content []byte) string
 	return sha
 }
 
+// seed creates a minimal fixture for verdict tests: db, runID, gateID, evidence SHA256,
+// blob root, and clock. Returns (h, runID, gateID, evSha, blobRoot, clk).
+func seed(t *testing.T) (*db.DB, string, string, string, string, clock.Clock) {
+	t.Helper()
+	h := openDB(t)
+	blobRoot := filepath.Join(t.TempDir(), "blobs")
+	gateID, runID := seedFixture(t, h)
+	evSha := putEvidence(t, h, blobRoot, []byte("test evidence for verdict"))
+	clk := clock.NewFake(2_000_000)
+	return h, runID, gateID, evSha, blobRoot, clk
+}
+
 func TestReport_HappyPath(t *testing.T) {
 	d := openDB(t)
 	blobRoot := filepath.Join(t.TempDir(), "blobs")
@@ -175,5 +187,73 @@ func TestReport_HappyPath(t *testing.T) {
 	}
 	if res.BoundAt == 0 {
 		t.Error("BoundAt must not be zero")
+	}
+}
+
+func TestLatest_ReturnsMostRecent(t *testing.T) {
+	h, runID, gateID, evSha, _, clk := seed(t)
+	report := func(opID, status string) {
+		_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+			store := verdict.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk),
+				evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), ""))
+			_, err := store.Report(verdict.ReportInput{
+				OpID: opID, GateID: gateID, RunID: runID, Status: status,
+				Sha256:       evSha,
+				ProducerHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				InputsHash:   "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			})
+			return err
+		})
+	}
+	report("01HNBXBT9J6MGK3Z5R7WVXTM01", "fail")
+	report("01HNBXBT9J6MGK3Z5R7WVXTM02", "pass")
+
+	var got verdict.LatestResult
+	err := h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := verdict.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk),
+			evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), ""))
+		r, err := store.Latest(gateID)
+		got = r
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Verdict == nil || got.Verdict.Status != "pass" {
+		t.Fatalf("latest should be pass, got: %+v", got)
+	}
+	if !got.Fresh {
+		t.Fatalf("latest pass with matching gate_def_hash should be fresh")
+	}
+}
+
+func TestLatest_StaleOnGateHashChange(t *testing.T) {
+	h, runID, gateID, evSha, _, clk := seed(t)
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := verdict.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk),
+			evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), ""))
+		_, err := store.Report(verdict.ReportInput{
+			OpID: "01HNBXBT9J6MGK3Z5R7WVXTM03", GateID: gateID, RunID: runID, Status: "pass",
+			Sha256:       evSha,
+			ProducerHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			InputsHash:   "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		})
+		return err
+	})
+	// Mutate gate_def_hash out-of-band to simulate spec drift.
+	_, _ = h.SQL().Exec(
+		"UPDATE gates SET gate_def_hash=? WHERE id=?",
+		"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", gateID,
+	)
+	var got verdict.LatestResult
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := verdict.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk),
+			evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), ""))
+		r, _ := store.Latest(gateID)
+		got = r
+		return nil
+	})
+	if got.Fresh {
+		t.Fatalf("verdict should be stale after gate_def_hash mutation")
 	}
 }
