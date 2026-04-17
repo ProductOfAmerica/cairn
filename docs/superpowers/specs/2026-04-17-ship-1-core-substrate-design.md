@@ -157,8 +157,11 @@ func (s *task.Store) Complete(opID, claimID string) error {
 ```
 
 `*db.Tx` still technically exposes `Exec/Query`, so bypass is possible.
-Discipline: never issue SQL outside a `Store` method. Enforced by code review
-in Ship 1. An AST-based lint can be added in a later ship if bypass ever lands.
+Discipline: never issue SQL outside a `Store` method. **Deliberate Ship 1
+tradeoff:** enforcement = convention + code review. Tripwire: if a bypass
+ever lands in main, Ship 2 adds an AST-based lint that parses `tx.Exec/
+Query/QueryRow` call sites and asserts each originates inside a `Store`
+method of the table's owning package.
 
 ### 2d. Dependencies
 
@@ -303,9 +306,12 @@ Response: `{op_id, kind:"task.claim", data:{claim_id, run_id, task_id, expires_a
 4. **Write ordering** (see § 5e for crash-window discussion):
    - Write bytes to `blobs/<sha[:2]>/.tmp-<ulid>`.
    - `fsync` the file.
-   - `os.Rename` atomic to final path. If final path already exists,
-     `os.Stat` + size check; identical size means dedupe; mismatch means
-     exit `4` `{code:"blob_collision"}`.
+   - If final path already exists, `os.Stat` + stream-sha256 of the existing
+     file; match source sha → dedupe (discard temp); mismatch → exit `4`
+     `{kind:"blob_collision"}`. Pre-check required for Windows where
+     `os.Rename` fails on existing destinations; also correct on POSIX.
+     See §5e for rationale.
+   - Otherwise `os.Rename` atomic to final path.
 5. `INSERT INTO evidence (id, sha256, uri, bytes, content_type, created_at)`
    with `ON CONFLICT(sha256) DO NOTHING` — dedupe on sha collision.
    `content_type = --content-type flag || "application/octet-stream"`.
@@ -412,7 +418,10 @@ wastes prior verified gates. Design doc § 7 includes a dogfood test for this.
 
 ### 3h. Events
 
-**`cairn events since <timestamp> [--limit <n>]`** (read-only)
+**`cairn events since <timestamp_ms> [--limit <n>]`** (read-only)
+- `<timestamp_ms>` must be a non-negative integer (milliseconds since epoch).
+  Other formats (RFC 3339, unix seconds, durations) rejected with exit `1`.
+  See §6c.
 - `SELECT * FROM events WHERE at > ? ORDER BY id ASC LIMIT ?`. Default limit 100.
 - Response: `{kind:"events.since", data:{events:[{id, at, kind, entity_kind, entity_id, payload, op_id}]}}`.
 
@@ -420,11 +429,11 @@ wastes prior verified gates. Design doc § 7 includes a dogfood test for this.
 
 | # | Invariant | Enforced by | Ship 1 test |
 |---|-----------|-------------|------------|
-| 1 | Mutation only via CLI | Store pattern + code review; `db.Tx` exposed methods don't include entity logic. | Architecture note; no automated test in Ship 1. |
+| 1 | Mutation only via CLI | Store pattern + code review; `db.Tx` exposed methods don't include entity logic. Deliberate Ship 1 tradeoff: no grep/AST/lint enforcement — convention + review only. **Tripwire:** if a bypass (raw SQL outside a Store) ever lands in main, add an AST-based lint in Ship 2 that parses `tx.Exec/Query/QueryRow` call sites and asserts they originate from inside a `Store` method of the table's owning package. | Architecture note; no automated test in Ship 1. |
 | 2 | Spec in git, schema-validated | `internal/intent` loads from FS only; requirements/gates mutate only via `cairn task plan`. | Unit: invalid spec → no rows inserted. |
 | 3 | Evidence content-addressed + verified | `evidence.put` hashes before insert; `verdict.report` re-verifies in bind txn. | Unit: corrupt blob → `verdict.report` exits `4`. |
 | 4 | Verdicts append-only | No UPDATE/DELETE on `verdicts` in any store. | Unit: attempt in test → fails. |
-| 5 | Leases time-bound, CAS acquisition | `task.Claim` CAS inside `BEGIN IMMEDIATE`; inline rule-1 cleanup same txn. | Unit `TestConcurrentClaim`: ≥5 goroutines + ≥2 subprocesses. |
+| 5 | Leases time-bound, CAS acquisition | `task.Claim` CAS inside `BEGIN IMMEDIATE`; inline rule-1 cleanup same txn. | Unit `TestConcurrentClaim`: ≥5 goroutines + ≥3 subprocesses. |
 | 6 | Every mutation carries op_id | CLI generates if omitted; stores require `opID string` arg. | Unit: replay same op_id → cached result, no duplicate events. |
 | 7 | Offline-capable | No network imports; `go.mod` audit. | CI: network-isolated job proves build + test green. |
 | 8 | Reconcile stateless + on-demand | Ship 2. In Ship 1: inline rule-1 cleanup is idempotent (CAS on `released_at IS NULL`). | Unit: claim → expire → re-run claim, no double-release. |
@@ -487,10 +496,17 @@ if err != nil { return nil, err }
 
 // ... do mutation, emit events ...
 
-// At end of successful path:
+// At end of successful path (SAME transaction as mutation + events):
 s.opLog.Record(opID, kind, resultJSON)
 ```
 
+- **The `op_log` insert runs in the same `BEGIN IMMEDIATE` transaction as the
+  mutation and its emitted events.** This is load-bearing: if the insert
+  lived in a separate txn, a crash between mutation-commit and op_log-commit
+  would produce a mutation with no replay guard — the next caller with the
+  same `op_id` would re-execute the mutation, violating Invariant 6.
+  `opLog.Check` reads, `opLog.Record` writes, and the domain mutation all
+  share one `*db.Tx`; committed together or rolled back together.
 - `op_id` + `kind` pair: replay with different kind → exit `2`
   `{kind:"op_id_kind_mismatch"}`.
 - `op_log` rows do not expire in Ship 1. Ship 4 may add GC.
@@ -524,6 +540,16 @@ PRAGMA foreign_keys=ON;
    Concurrent `evidence verify` returns exit `3` `not_stored`. Correct
    semantic: `verify` asks "has cairn committed this as bindable?" Answer
    during the window is "no." Caller retries the put; dedupe handles it.
+
+**Windows rename-exists:** on Windows, `os.Rename` fails if the destination
+exists (unlike POSIX which silently overwrites). `cairn evidence put` handles
+this by: before attempting rename, `os.Stat` the destination; if present,
+stream-sha256 the existing file and compare against the just-computed source
+hash — match → dedupe (discard temp, proceed to `INSERT OR IGNORE`); mismatch
+→ exit `4` `{kind:"blob_collision", details:{path, existing_sha, new_sha}}`.
+A mismatch at a content-addressed path signals on-disk corruption and is
+never expected under correct operation. This pre-check unifies Windows +
+POSIX behavior so the write path is platform-agnostic above `os.Rename`.
 
 Rejected alternative: INSERT-first, rename-after-commit. Opens a worse window
 — crash between commit and rename leaves a DB row claiming a blob that doesn't
@@ -575,17 +601,26 @@ exist. Current order is strictly safer.
 | 12 | `cairn evidence put` | mutation | `<path> [--content-type <ct>]` | `1` path unreadable; `4` blob collision |
 | 13 | `cairn evidence verify` | read | `<sha256>` | `3` not stored; `4` hash mismatch |
 | 14 | `cairn evidence get` | read | `<sha256>` | `3` not stored |
-| 15 | `cairn events since` | read | `<timestamp> [--limit <n>]` | — |
+| 15 | `cairn events since` | read | `<timestamp_ms> [--limit <n>]` | `1` timestamp not integer ms |
 
 **Explicitly NOT in Ship 1:** `cairn memory *`, `cairn reconcile`. Those are Ship 2.
 
 **Explicitly NOT a flag on `verdict report`:** `--gate-def-hash` (value is read
 from the gates table at bind time; caller cannot override).
 
-### 6c. Duration parsing
+### 6c. Duration + timestamp parsing
 
 `--ttl` accepts Go duration syntax (`30m`, `1h30m`, `2h`). Parsed via
 `time.ParseDuration`. Invalid → exit `1` `{kind:"bad_input", details:{flag:"--ttl"}}`.
+
+`cairn events since <timestamp_ms>` accepts **only** integer milliseconds
+since epoch (non-negative int64), matching the on-disk timestamp
+representation (§ 0 clock decision). Explicitly rejected: RFC 3339 strings
+(`2026-04-17T10:00:00Z`), unix seconds, durations, relative forms (`1h ago`).
+Malformed input → exit `1` `{kind:"bad_input", details:{flag:"timestamp_ms"}}`.
+Rationale: one representation on the wire and on disk prevents silent
+conversion bugs; `jq 'select(.at > ...)' | head -1 | .at` trivially gives
+the caller the ms value to pass back.
 
 ### 6d. Response envelope (normative)
 
@@ -659,7 +694,7 @@ Error form (mutually exclusive with `data`):
 
 **Concurrency test** — `TestConcurrentClaim`:
 
-- ≥5 goroutines + ≥2 subprocesses race to claim the same task.
+- ≥5 goroutines + ≥3 subprocesses race to claim the same task.
 - Exactly one wins; others exit `2` `{code:"task_not_claimable"}`.
 - Post-test: `PRAGMA integrity_check` returns `ok`.
 
