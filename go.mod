@@ -6,6 +6,8 @@ require github.com/oklog/ulid/v2 v2.1.1 // ULID generation for all cairn identif
 
 require modernc.org/sqlite v1.34.2 // pure-Go SQLite driver; no CGO
 
+require gopkg.in/yaml.v3 v3.0.1 // YAML parsing for intent specs
+
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
