@@ -1,11 +1,15 @@
 package intent_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ProductOfAmerica/cairn/internal/clock"
+	"github.com/ProductOfAmerica/cairn/internal/db"
+	"github.com/ProductOfAmerica/cairn/internal/events"
 	"github.com/ProductOfAmerica/cairn/internal/intent"
 )
 
@@ -290,5 +294,47 @@ func TestGateDefHash_ChangesOnSemanticEdit(t *testing.T) {
 	h2, _ := intent.GateDefHash(edited)
 	if h1 == h2 {
 		t.Fatalf("semantic edit should change hash")
+	}
+}
+
+func TestStore_Materialize(t *testing.T) {
+	root := t.TempDir()
+	writeSpec(t, root)
+	bundle, _ := intent.Load(root)
+
+	p := filepath.Join(t.TempDir(), "state.db")
+	h, _ := db.Open(p)
+	defer h.Close()
+
+	clk := clock.NewFake(100)
+	appender := events.NewAppender(clk)
+
+	var result intent.MaterializeResult
+	err := h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := intent.NewStore(tx, appender, clk)
+		r, err := store.Materialize(bundle)
+		result = r
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequirementsMaterialized != 1 || result.GatesMaterialized != 1 || result.TasksMaterialized != 1 {
+		t.Fatalf("unexpected counts: %+v", result)
+	}
+
+	var n int
+	_ = h.SQL().QueryRow("SELECT count(*) FROM requirements").Scan(&n)
+	if n != 1 {
+		t.Fatalf("requirements=%d", n)
+	}
+	_ = h.SQL().QueryRow("SELECT count(*) FROM tasks").Scan(&n)
+	if n != 1 {
+		t.Fatalf("tasks=%d", n)
+	}
+	var hash string
+	_ = h.SQL().QueryRow("SELECT gate_def_hash FROM gates WHERE id='AC-001'").Scan(&hash)
+	if len(hash) != 64 {
+		t.Fatalf("gate_def_hash bad: %s", hash)
 	}
 }
