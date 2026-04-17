@@ -1,0 +1,9 @@
+/cairn
+/cairn.exe
+/bin/
+/dist/
+*.test
+*.prof
+coverage.out
+.cairn/
+.gitnexus
