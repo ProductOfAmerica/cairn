@@ -114,3 +114,153 @@ func TestList_FilterByStatus(t *testing.T) {
 		t.Fatalf("unexpected list: %+v", openOnly)
 	}
 }
+
+func seedClaimable(t *testing.T, h *db.DB, id string, deps []string) {
+	t.Helper()
+	depsJSON, _ := json.Marshal(deps)
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		_, _ = tx.Exec(`INSERT OR IGNORE INTO requirements
+		                 (id, spec_path, spec_hash, created_at, updated_at)
+		                 VALUES ('REQ-1','p','h',0,0)`)
+		_, err := tx.Exec(`INSERT INTO tasks (id, requirement_id, spec_path, spec_hash,
+		                   depends_on_json, required_gates_json, status,
+		                   created_at, updated_at)
+		                   VALUES (?,'REQ-1','p','h',?,'[]','open',0,0)`,
+			id, string(depsJSON))
+		return err
+	})
+}
+
+func TestClaim_HappyPath(t *testing.T) {
+	h := openDB(t)
+	seedClaimable(t, h, "T-1", nil)
+
+	clk := clock.NewFake(1_000_000)
+	var res task.ClaimResult
+	err := h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), clk)
+		r, err := store.Claim(task.ClaimInput{
+			OpID:    "01HNBXBT9J6MGK3Z5R7WVXTM0A",
+			TaskID:  "T-1",
+			AgentID: "agent-1",
+			TTLMs:   30 * 60 * 1000,
+		})
+		res = r
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ClaimID == "" || res.RunID == "" {
+		t.Fatalf("bad result: %+v", res)
+	}
+	if res.ExpiresAt != 1_000_000+30*60*1000 {
+		t.Fatalf("expires_at wrong: %d", res.ExpiresAt)
+	}
+
+	// Verify task flipped to claimed.
+	var status string
+	_ = h.SQL().QueryRow("SELECT status FROM tasks WHERE id='T-1'").Scan(&status)
+	if status != "claimed" {
+		t.Fatalf("status=%s", status)
+	}
+}
+
+func TestClaim_DepNotDone(t *testing.T) {
+	h := openDB(t)
+	seedClaimable(t, h, "T-dep", nil)
+	seedClaimable(t, h, "T-main", []string{"T-dep"})
+
+	clk := clock.NewFake(1_000)
+	err := h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), clk)
+		_, err := store.Claim(task.ClaimInput{
+			OpID: "01HNBXBT9J6MGK3Z5R7WVXTM0B", TaskID: "T-main",
+			AgentID: "a", TTLMs: 1000,
+		})
+		return err
+	})
+	if err == nil {
+		t.Fatal("expected dep_not_done")
+	}
+}
+
+func TestClaim_AlreadyClaimedConflict(t *testing.T) {
+	h := openDB(t)
+	seedClaimable(t, h, "T-x", nil)
+
+	clk := clock.NewFake(1_000)
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), clk)
+		_, err := store.Claim(task.ClaimInput{
+			OpID: "01HNBXBT9J6MGK3Z5R7WVXTM0C", TaskID: "T-x",
+			AgentID: "a", TTLMs: 60_000,
+		})
+		return err
+	})
+
+	err := h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), clk)
+		_, err := store.Claim(task.ClaimInput{
+			OpID: "01HNBXBT9J6MGK3Z5R7WVXTM0D", TaskID: "T-x",
+			AgentID: "a", TTLMs: 60_000,
+		})
+		return err
+	})
+	if err == nil {
+		t.Fatal("second claim should conflict")
+	}
+}
+
+func TestClaim_OpLogReplayReturnsCached(t *testing.T) {
+	h := openDB(t)
+	seedClaimable(t, h, "T-y", nil)
+
+	clk := clock.NewFake(1_000)
+	opID := "01HNBXBT9J6MGK3Z5R7WVXTM0E"
+	var first task.ClaimResult
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), clk)
+		r, err := store.Claim(task.ClaimInput{OpID: opID, TaskID: "T-y", AgentID: "a", TTLMs: 60_000})
+		first = r
+		return err
+	})
+	var second task.ClaimResult
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), clk)
+		r, err := store.Claim(task.ClaimInput{OpID: opID, TaskID: "T-y", AgentID: "a", TTLMs: 60_000})
+		second = r
+		return err
+	})
+	if first.ClaimID != second.ClaimID || first.RunID != second.RunID {
+		t.Fatalf("replay did not return cached result: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestClaim_ExpiredLeaseClearedInline(t *testing.T) {
+	h := openDB(t)
+	seedClaimable(t, h, "T-z", nil)
+
+	clk := clock.NewFake(1_000)
+	// First claim with 1s ttl.
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), clk)
+		_, err := store.Claim(task.ClaimInput{
+			OpID: "01HNBXBT9J6MGK3Z5R7WVXTM0F", TaskID: "T-z", AgentID: "a", TTLMs: 1000,
+		})
+		return err
+	})
+	// Advance clock past lease.
+	clk.Advance(2000)
+	// Second claim — inline rule 1 should flip the old claim released, task back to open.
+	err := h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), clk)
+		_, err := store.Claim(task.ClaimInput{
+			OpID: "01HNBXBT9J6MGK3Z5R7WVXTM0G", TaskID: "T-z", AgentID: "b", TTLMs: 60_000,
+		})
+		return err
+	})
+	if err != nil {
+		t.Fatalf("expected re-claim to succeed after expiry, got: %v", err)
+	}
+}
