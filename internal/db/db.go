@@ -3,6 +3,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 
@@ -53,3 +54,22 @@ func (d *DB) Close() error { return d.sqlDB.Close() }
 // SQL exposes the raw *sql.DB for read-only usage outside a transaction.
 // Prefer WithTx for mutations (coming in Task 5.3).
 func (d *DB) SQL() *sql.DB { return d.sqlDB }
+
+// WithReadTx runs fn inside a read-only transaction with deferred locking.
+// This allows readers to proceed without blocking writers in WAL mode.
+func (d *DB) WithReadTx(ctx context.Context, fn func(tx *Tx) error) error {
+	tx, err := d.sqlDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("begin read tx: %w", err)
+	}
+	if err := fn(&Tx{sqlTx: tx}); err != nil {
+		if rbErr := tx.Rollback(); rbErr != nil {
+			return err
+		}
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit read tx: %w", err)
+	}
+	return nil
+}

@@ -2,10 +2,15 @@ package evidence_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/ProductOfAmerica/cairn/internal/cairnerr"
 	"github.com/ProductOfAmerica/cairn/internal/clock"
 	"github.com/ProductOfAmerica/cairn/internal/db"
 	"github.com/ProductOfAmerica/cairn/internal/events"
@@ -231,5 +236,81 @@ func TestVerify_DetectsCorruption(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Verify should detect corruption and return an error")
+	}
+}
+
+func TestPut_CommitWindow_VerifyReturnsNotStored(t *testing.T) {
+	// During the window between Put's WriteAtomic and its containing txn
+	// Commit, the blob is on disk but no committed evidence row exists.
+	// A concurrent Verify from another DB connection must return
+	// {kind:"not_stored"} — the spec's design §3e visibility semantic.
+	p := filepath.Join(t.TempDir(), "state.db")
+	h1, err := db.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h1.Close() })
+	h2, err := db.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h2.Close() })
+
+	clk := clock.NewFake(1)
+	blobRoot := t.TempDir()
+	src := filepath.Join(t.TempDir(), "out.txt")
+	if err := os.WriteFile(src, []byte("race"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sum := sha256.Sum256([]byte("race"))
+	sha := hex.EncodeToString(sum[:])
+
+	release := make(chan struct{})
+	putDone := make(chan struct{})
+	// Goroutine A: open a Put txn, do the work, then BLOCK before commit.
+	go func() {
+		defer close(putDone)
+		_ = h1.WithTx(context.Background(), func(tx *db.Tx) error {
+			store := evidence.NewStore(tx, events.NewAppender(clk),
+				ids.NewGenerator(clk), blobRoot)
+			if _, err := store.Put("01HNBXBT9J6MGK3Z5R7WVXTM0P", src, ""); err != nil {
+				return err
+			}
+			<-release
+			return nil
+		})
+	}()
+	time.Sleep(50 * time.Millisecond) // give A time to land the write
+
+	// B: Verify via h2 should return not_stored because A's evidence row is
+	// uncommitted.
+	var verifyErr error
+	verifyDone := make(chan struct{})
+	go func() {
+		defer close(verifyDone)
+		verifyErr = h2.WithReadTx(context.Background(), func(tx *db.Tx) error {
+			store := evidence.NewStore(tx, events.NewAppender(clk),
+				ids.NewGenerator(clk), blobRoot)
+			return store.Verify(sha)
+		})
+	}()
+
+	select {
+	case <-verifyDone:
+	case <-time.After(2 * time.Second):
+		close(release)
+		<-putDone
+		t.Fatal("Verify never returned within 2s — probably deadlocked on A's lock")
+	}
+	close(release)
+	<-putDone
+
+	if verifyErr == nil {
+		t.Fatal("Verify during Put's window must return not_stored")
+	}
+	var ce *cairnerr.Err
+	if !errors.As(verifyErr, &ce) || ce.Kind != "not_stored" {
+		t.Fatalf("expected cairnerr kind=not_stored, got %+v", verifyErr)
 	}
 }
