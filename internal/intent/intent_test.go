@@ -101,3 +101,139 @@ func TestValidate_SchemaRejectsMissingID(t *testing.T) {
 		t.Fatalf("want schema error about missing id, got: %+v", errs)
 	}
 }
+
+func TestValidate_RefTaskImplementsMissingRequirement(t *testing.T) {
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, "requirements"), 0o755)
+	_ = os.MkdirAll(filepath.Join(root, "tasks"), 0o755)
+	// Write a minimally valid requirement so only the reference is bad.
+	_ = os.WriteFile(
+		filepath.Join(root, "requirements", "REQ-001.yaml"),
+		[]byte(`id: REQ-001
+title: x
+gates:
+  - id: AC-001
+    kind: test
+    producer: {kind: executable}
+`), 0o644)
+	_ = os.WriteFile(
+		filepath.Join(root, "tasks", "TASK-001.yaml"),
+		[]byte(`id: TASK-001
+implements: [REQ-999]
+required_gates: [AC-001]
+`), 0o644)
+
+	bundle, _ := intent.Load(root)
+	errs := intent.Validate(bundle)
+	found := false
+	for _, e := range errs {
+		if e.Kind == "ref" && strings.Contains(e.Message, "REQ-999") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want ref error for REQ-999, got: %+v", errs)
+	}
+}
+
+func TestValidate_DependsCycle(t *testing.T) {
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, "requirements"), 0o755)
+	_ = os.MkdirAll(filepath.Join(root, "tasks"), 0o755)
+	_ = os.WriteFile(
+		filepath.Join(root, "requirements", "REQ-001.yaml"),
+		[]byte(`id: REQ-001
+title: x
+gates:
+  - id: AC-001
+    kind: test
+    producer: {kind: executable}
+`), 0o644)
+	_ = os.WriteFile(
+		filepath.Join(root, "tasks", "TASK-A.yaml"),
+		[]byte(`id: TASK-A
+implements: [REQ-001]
+depends_on: [TASK-B]
+`), 0o644)
+	_ = os.WriteFile(
+		filepath.Join(root, "tasks", "TASK-B.yaml"),
+		[]byte(`id: TASK-B
+implements: [REQ-001]
+depends_on: [TASK-A]
+`), 0o644)
+
+	bundle, _ := intent.Load(root)
+	errs := intent.Validate(bundle)
+	found := false
+	for _, e := range errs {
+		if e.Kind == "cycle" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want cycle error, got: %+v", errs)
+	}
+}
+
+func TestValidate_DuplicateTaskID(t *testing.T) {
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, "requirements"), 0o755)
+	_ = os.MkdirAll(filepath.Join(root, "tasks"), 0o755)
+	_ = os.WriteFile(
+		filepath.Join(root, "requirements", "REQ-001.yaml"),
+		[]byte(`id: REQ-001
+title: x
+gates:
+  - id: AC-001
+    kind: test
+    producer: {kind: executable}
+`), 0o644)
+	_ = os.WriteFile(
+		filepath.Join(root, "tasks", "TASK-A-1.yaml"),
+		[]byte("id: TASK-A\nimplements: [REQ-001]\n"), 0o644)
+	_ = os.WriteFile(
+		filepath.Join(root, "tasks", "TASK-A-2.yaml"),
+		[]byte("id: TASK-A\nimplements: [REQ-001]\n"), 0o644)
+
+	bundle, _ := intent.Load(root)
+	errs := intent.Validate(bundle)
+	found := false
+	for _, e := range errs {
+		if e.Kind == "duplicate" && strings.Contains(e.Message, "TASK-A") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want duplicate error, got: %+v", errs)
+	}
+}
+
+func TestValidate_RequiredGateNotOnImplementedReq(t *testing.T) {
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, "requirements"), 0o755)
+	_ = os.MkdirAll(filepath.Join(root, "tasks"), 0o755)
+	_ = os.WriteFile(
+		filepath.Join(root, "requirements", "REQ-001.yaml"),
+		[]byte(`id: REQ-001
+title: x
+gates:
+  - id: AC-001
+    kind: test
+    producer: {kind: executable}
+`), 0o644)
+	_ = os.WriteFile(
+		filepath.Join(root, "tasks", "TASK-A.yaml"),
+		[]byte("id: TASK-A\nimplements: [REQ-001]\nrequired_gates: [AC-999]\n"), 0o644)
+
+	bundle, _ := intent.Load(root)
+	errs := intent.Validate(bundle)
+	found := false
+	for _, e := range errs {
+		if e.Kind == "ref" && strings.Contains(e.Message, "AC-999") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want ref error for AC-999, got: %+v", errs)
+	}
+}

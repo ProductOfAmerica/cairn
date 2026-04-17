@@ -134,4 +134,160 @@ func splitValidationErrors(path, combined string) []SpecError {
 	return out
 }
 
-func validateReferential(_ *Bundle) []SpecError { return nil }
+func validateReferential(b *Bundle) []SpecError {
+	var out []SpecError
+
+	// Uniqueness: requirement ids.
+	reqByID := map[string]*Requirement{}
+	for i := range b.Requirements {
+		r := &b.Requirements[i]
+		if prev, dup := reqByID[r.ID]; dup {
+			out = append(out, SpecError{
+				Path: r.SpecPath, Kind: "duplicate",
+				Message: fmt.Sprintf("requirement id %q also declared at %s", r.ID, prev.SpecPath),
+			})
+			continue
+		}
+		reqByID[r.ID] = r
+	}
+
+	// Uniqueness: gate ids within each requirement.
+	gatesByID := map[string]*Gate{} // keyed globally so tasks can look them up
+	for i := range b.Requirements {
+		r := &b.Requirements[i]
+		local := map[string]bool{}
+		for j := range r.Gates {
+			g := &r.Gates[j]
+			if local[g.ID] {
+				out = append(out, SpecError{
+					Path: r.SpecPath, Kind: "duplicate",
+					Message: fmt.Sprintf("gate id %q duplicated within requirement %q", g.ID, r.ID),
+				})
+				continue
+			}
+			local[g.ID] = true
+			gatesByID[g.ID] = g
+		}
+	}
+
+	// Uniqueness: task ids.
+	taskByID := map[string]*Task{}
+	for i := range b.Tasks {
+		t := &b.Tasks[i]
+		if prev, dup := taskByID[t.ID]; dup {
+			out = append(out, SpecError{
+				Path: t.SpecPath, Kind: "duplicate",
+				Message: fmt.Sprintf("task id %q also declared at %s", t.ID, prev.SpecPath),
+			})
+			continue
+		}
+		taskByID[t.ID] = t
+	}
+
+	// Referential: task.implements → requirement exists.
+	// Referential: task.required_gates → gate exists on implemented requirement.
+	// Referential: task.depends_on → task exists + no self-ref.
+	for i := range b.Tasks {
+		t := &b.Tasks[i]
+		implemented := map[string]bool{}
+		for _, reqID := range t.Implements {
+			if _, ok := reqByID[reqID]; !ok {
+				out = append(out, SpecError{
+					Path: t.SpecPath, Kind: "ref",
+					Message: fmt.Sprintf("task %q implements unknown requirement %q", t.ID, reqID),
+				})
+				continue
+			}
+			implemented[reqID] = true
+		}
+
+		// required_gates must belong to an implemented requirement.
+		for _, gateID := range t.RequiredGates {
+			g, ok := gatesByID[gateID]
+			if !ok {
+				out = append(out, SpecError{
+					Path: t.SpecPath, Kind: "ref",
+					Message: fmt.Sprintf("task %q requires unknown gate %q", t.ID, gateID),
+				})
+				continue
+			}
+			// Find which requirement owns this gate.
+			ownerReq := ""
+			for rid, r := range reqByID {
+				for j := range r.Gates {
+					if &r.Gates[j] == g {
+						ownerReq = rid
+					}
+				}
+			}
+			if ownerReq != "" && !implemented[ownerReq] {
+				out = append(out, SpecError{
+					Path: t.SpecPath, Kind: "ref",
+					Message: fmt.Sprintf(
+						"task %q requires gate %q which belongs to requirement %q (not in implements)",
+						t.ID, gateID, ownerReq),
+				})
+			}
+		}
+
+		for _, dep := range t.DependsOn {
+			if dep == t.ID {
+				out = append(out, SpecError{
+					Path: t.SpecPath, Kind: "ref",
+					Message: fmt.Sprintf("task %q depends on itself", t.ID),
+				})
+				continue
+			}
+			if _, ok := taskByID[dep]; !ok {
+				out = append(out, SpecError{
+					Path: t.SpecPath, Kind: "ref",
+					Message: fmt.Sprintf("task %q depends on unknown task %q", t.ID, dep),
+				})
+			}
+		}
+	}
+
+	// Cycle detection on depends_on (DFS).
+	out = append(out, detectCycles(b.Tasks, taskByID)...)
+
+	return out
+}
+
+func detectCycles(tasks []Task, byID map[string]*Task) []SpecError {
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := map[string]int{}
+	var out []SpecError
+	var dfs func(id string, path []string)
+	dfs = func(id string, path []string) {
+		color[id] = gray
+		t, ok := byID[id]
+		if !ok {
+			color[id] = black
+			return
+		}
+		for _, dep := range t.DependsOn {
+			if color[dep] == gray {
+				cyclePath := append(path, id, dep)
+				out = append(out, SpecError{
+					Path: t.SpecPath, Kind: "cycle",
+					Message: fmt.Sprintf("dependency cycle: %v", cyclePath),
+				})
+				continue
+			}
+			if color[dep] == white {
+				dfs(dep, append(path, id))
+			}
+		}
+		color[id] = black
+	}
+	for _, t := range tasks {
+		if color[t.ID] == white {
+			dfs(t.ID, nil)
+		}
+	}
+	return out
+}
