@@ -65,12 +65,12 @@ func newVerdictReportCmd(app *App) *cobra.Command {
 				defer h.Close()
 				var res verdict.ReportResult
 				err = h.WithTx(cmd.Context(), func(tx *db.Tx) error {
-					evStore := evidence.NewStore(tx, events.NewAppender(app.Clock), app.IDs, blobRoot)
+					evStore := evidence.NewStore(tx, events.NewAppender(app.Clock), app.IDs, blobRoot, app.Clock)
 					put, perr := evStore.Put(opID+":ev", evPath, "")
 					if perr != nil {
 						return perr
 					}
-					vStore := verdict.NewStore(tx, events.NewAppender(app.Clock), app.IDs, evStore)
+					vStore := verdict.NewStore(tx, events.NewAppender(app.Clock), app.IDs, evStore, app.Clock)
 					r, verr := vStore.Report(verdict.ReportInput{
 						OpID: opID, GateID: gate, RunID: run, Status: status,
 						Sha256: put.SHA256, ProducerHash: producerHash,
@@ -111,8 +111,8 @@ func newVerdictLatestCmd(app *App) *cobra.Command {
 				defer h.Close()
 				var res verdict.LatestResult
 				err = h.WithTx(cmd.Context(), func(tx *db.Tx) error {
-					evStore := evidence.NewStore(tx, events.NewAppender(app.Clock), app.IDs, blobRoot)
-					vStore := verdict.NewStore(tx, events.NewAppender(app.Clock), app.IDs, evStore)
+					evStore := evidence.NewStore(tx, events.NewAppender(app.Clock), app.IDs, blobRoot, app.Clock)
+					vStore := verdict.NewStore(tx, events.NewAppender(app.Clock), app.IDs, evStore, app.Clock)
 					r, err := vStore.Latest(args[0])
 					res = r
 					return err
@@ -139,8 +139,8 @@ func newVerdictHistoryCmd(app *App) *cobra.Command {
 				defer h.Close()
 				var res []verdict.VerdictWithFresh
 				err = h.WithTx(cmd.Context(), func(tx *db.Tx) error {
-					evStore := evidence.NewStore(tx, events.NewAppender(app.Clock), app.IDs, blobRoot)
-					vStore := verdict.NewStore(tx, events.NewAppender(app.Clock), app.IDs, evStore)
+					evStore := evidence.NewStore(tx, events.NewAppender(app.Clock), app.IDs, blobRoot, app.Clock)
+					vStore := verdict.NewStore(tx, events.NewAppender(app.Clock), app.IDs, evStore, app.Clock)
 					r, err := vStore.History(args[0], limit)
 					res = r
 					return err

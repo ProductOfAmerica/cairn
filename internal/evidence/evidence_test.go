@@ -112,7 +112,7 @@ func TestPut_StoresBlobAndRow(t *testing.T) {
 
 	var res evidence.PutResult
 	err = d.WithTx(context.Background(), func(tx *db.Tx) error {
-		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot)
+		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot, clk)
 		r, err := store.Put("op-001", path, "")
 		res = r
 		return err
@@ -146,7 +146,7 @@ func TestPut_StoresBlobAndRow(t *testing.T) {
 	// Second put of same content in a new txn: dedupe.
 	var res2 evidence.PutResult
 	err = d.WithTx(context.Background(), func(tx *db.Tx) error {
-		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot)
+		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot, clk)
 		r, err := store.Put("op-002", path, "text/plain")
 		res2 = r
 		return err
@@ -181,7 +181,7 @@ func TestVerify_HashMatch(t *testing.T) {
 
 	var sha string
 	err = d.WithTx(context.Background(), func(tx *db.Tx) error {
-		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot)
+		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot, clk)
 		r, err := store.Put("op-v1", f.Name(), "")
 		sha = r.SHA256
 		return err
@@ -191,7 +191,7 @@ func TestVerify_HashMatch(t *testing.T) {
 	}
 
 	err = d.WithTx(context.Background(), func(tx *db.Tx) error {
-		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot)
+		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot, clk)
 		return store.Verify(sha)
 	})
 	if err != nil {
@@ -215,7 +215,7 @@ func TestVerify_DetectsCorruption(t *testing.T) {
 
 	var res evidence.PutResult
 	err = d.WithTx(context.Background(), func(tx *db.Tx) error {
-		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot)
+		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot, clk)
 		r, err := store.Put("op-c1", f.Name(), "")
 		res = r
 		return err
@@ -231,7 +231,7 @@ func TestVerify_DetectsCorruption(t *testing.T) {
 	}
 
 	err = d.WithTx(context.Background(), func(tx *db.Tx) error {
-		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot)
+		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot, clk)
 		return store.Verify(res.SHA256)
 	})
 	if err == nil {
@@ -273,7 +273,7 @@ func TestPut_CommitWindow_VerifyReturnsNotStored(t *testing.T) {
 		defer close(putDone)
 		_ = h1.WithTx(context.Background(), func(tx *db.Tx) error {
 			store := evidence.NewStore(tx, events.NewAppender(clk),
-				ids.NewGenerator(clk), blobRoot)
+				ids.NewGenerator(clk), blobRoot, clk)
 			if _, err := store.Put("01HNBXBT9J6MGK3Z5R7WVXTM0P", src, ""); err != nil {
 				return err
 			}
@@ -291,7 +291,7 @@ func TestPut_CommitWindow_VerifyReturnsNotStored(t *testing.T) {
 		defer close(verifyDone)
 		verifyErr = h2.WithReadTx(context.Background(), func(tx *db.Tx) error {
 			store := evidence.NewStore(tx, events.NewAppender(clk),
-				ids.NewGenerator(clk), blobRoot)
+				ids.NewGenerator(clk), blobRoot, clk)
 			return store.Verify(sha)
 		})
 	}()

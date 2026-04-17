@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"time"
 
 	"github.com/ProductOfAmerica/cairn/internal/cairnerr"
+	"github.com/ProductOfAmerica/cairn/internal/clock"
 	"github.com/ProductOfAmerica/cairn/internal/db"
 	"github.com/ProductOfAmerica/cairn/internal/events"
 	"github.com/ProductOfAmerica/cairn/internal/evidence"
@@ -33,11 +33,12 @@ type Store struct {
 	events   events.Appender
 	ids      *ids.Generator
 	evidence *evidence.Store
+	clock    clock.Clock
 }
 
 // NewStore returns a Store bound to the given transaction.
-func NewStore(tx *db.Tx, a events.Appender, g *ids.Generator, ev *evidence.Store) *Store {
-	return &Store{tx: tx, events: a, ids: g, evidence: ev}
+func NewStore(tx *db.Tx, a events.Appender, g *ids.Generator, ev *evidence.Store, c clock.Clock) *Store {
+	return &Store{tx: tx, events: a, ids: g, evidence: ev, clock: c}
 }
 
 // ReportInput is the caller-supplied data for a verdict.
@@ -54,12 +55,12 @@ type ReportInput struct {
 
 // ReportResult is the outcome of a successful Report call.
 type ReportResult struct {
-	VerdictID string
-	GateID    string
-	RunID     string
-	Status    string
-	Sequence  int64
-	BoundAt   int64
+	VerdictID string `json:"verdict_id"`
+	GateID    string `json:"gate_id"`
+	RunID     string `json:"run_id"`
+	Status    string `json:"status"`
+	Sequence  int64  `json:"sequence"`
+	BoundAt   int64  `json:"bound_at"`
 }
 
 // Report validates the input, re-verifies evidence, reads the gate's
@@ -147,7 +148,7 @@ func (s *Store) Report(in ReportInput) (ReportResult, error) {
 	verdictID := s.ids.ULID()
 
 	// 9. INSERT INTO verdicts.
-	boundAt := time.Now().UnixMilli()
+	boundAt := s.clock.NowMilli()
 	_, err = s.tx.Exec(
 		`INSERT INTO verdicts
 		     (id, run_id, gate_id, status, score_json, producer_hash,
@@ -303,9 +304,10 @@ func (s *Store) History(gateID string, limit int) ([]VerdictWithFresh, error) {
 }
 
 // VerdictWithFresh pairs a verdict with its derived freshness flag.
+// The Verdict fields are flattened into the JSON object via anonymous embed.
 type VerdictWithFresh struct {
-	Verdict Verdict `json:",inline"`
-	Fresh   bool    `json:"fresh"`
+	Verdict
+	Fresh bool `json:"fresh"`
 }
 
 // IsFreshPass returns (true, nil) iff the latest verdict for gateID has

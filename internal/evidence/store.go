@@ -6,16 +6,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/ProductOfAmerica/cairn/internal/cairnerr"
+	"github.com/ProductOfAmerica/cairn/internal/clock"
 	"github.com/ProductOfAmerica/cairn/internal/db"
 	"github.com/ProductOfAmerica/cairn/internal/events"
 	"github.com/ProductOfAmerica/cairn/internal/ids"
 )
-
-// nowMilli returns the current wall-clock time as milliseconds since Unix epoch.
-func nowMilli() int64 { return time.Now().UnixMilli() }
 
 // Store owns the evidence table and blob store access. It is bound to an
 // externally-managed transaction; the caller opens the txn and Store runs
@@ -25,30 +22,32 @@ type Store struct {
 	events   events.Appender
 	ids      *ids.Generator
 	blobRoot string
+	clock    clock.Clock
 }
 
 // NewStore returns a Store bound to the given transaction.
-func NewStore(tx *db.Tx, a events.Appender, g *ids.Generator, blobRoot string) *Store {
-	return &Store{tx: tx, events: a, ids: g, blobRoot: blobRoot}
+func NewStore(tx *db.Tx, a events.Appender, g *ids.Generator, blobRoot string, c clock.Clock) *Store {
+	return &Store{tx: tx, events: a, ids: g, blobRoot: blobRoot, clock: c}
 }
 
 // PutResult is the return value from Put.
 type PutResult struct {
-	ID          string
-	SHA256      string
-	Bytes       int64
-	ContentType string
-	Dedupe      bool
+	ID          string `json:"evidence_id"`
+	SHA256      string `json:"sha256"`
+	URI         string `json:"uri"`
+	Bytes       int64  `json:"bytes"`
+	ContentType string `json:"content_type"`
+	Dedupe      bool   `json:"dedupe"`
 }
 
 // GetResult is the return value from Get.
 type GetResult struct {
-	ID          string
-	SHA256      string
-	URI         string
-	Bytes       int64
-	ContentType string
-	CreatedAt   int64
+	ID          string `json:"evidence_id"`
+	SHA256      string `json:"sha256"`
+	URI         string `json:"uri"`
+	Bytes       int64  `json:"bytes"`
+	ContentType string `json:"content_type"`
+	CreatedAt   int64  `json:"created_at"`
 }
 
 // Put reads the file at path, sha256-hashes it, writes it atomically to the
@@ -98,7 +97,7 @@ func (s *Store) Put(opID, path, contentType string) (PutResult, error) {
 	} else if err == sql.ErrNoRows {
 		// Insert new row.
 		newID := s.ids.ULID()
-		createdAt := nowMilli()
+		createdAt := s.clock.NowMilli()
 		_, insErr := s.tx.Exec(
 			`INSERT INTO evidence (id, sha256, uri, bytes, content_type, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?)

@@ -39,7 +39,7 @@ func newEvidencePutCmd(app *App) *cobra.Command {
 				defer h.Close()
 				var res evidence.PutResult
 				err = h.WithTx(cmd.Context(), func(tx *db.Tx) error {
-					store := evidence.NewStore(tx, events.NewAppender(app.Clock), app.IDs, blobRoot)
+					store := evidence.NewStore(tx, events.NewAppender(app.Clock), app.IDs, blobRoot, app.Clock)
 					r, err := store.Put(opID, args[0], contentType)
 					res = r
 					return err
@@ -66,7 +66,7 @@ func newEvidenceVerifyCmd(app *App) *cobra.Command {
 				}
 				defer h.Close()
 				err = h.WithTx(cmd.Context(), func(tx *db.Tx) error {
-					store := evidence.NewStore(tx, events.NewAppender(app.Clock), app.IDs, blobRoot)
+					store := evidence.NewStore(tx, events.NewAppender(app.Clock), app.IDs, blobRoot, app.Clock)
 					return store.Verify(args[0])
 				})
 				return map[string]any{"sha256": args[0], "verified_at": app.Clock.NowMilli()}, err
@@ -90,7 +90,7 @@ func newEvidenceGetCmd(app *App) *cobra.Command {
 				defer h.Close()
 				var res evidence.GetResult
 				err = h.WithTx(cmd.Context(), func(tx *db.Tx) error {
-					store := evidence.NewStore(tx, events.NewAppender(app.Clock), app.IDs, blobRoot)
+					store := evidence.NewStore(tx, events.NewAppender(app.Clock), app.IDs, blobRoot, app.Clock)
 					r, err := store.Get(args[0])
 					res = r
 					return err

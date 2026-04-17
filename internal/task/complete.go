@@ -69,7 +69,7 @@ func (s *Store) Complete(in CompleteInput) (CompleteResult, error) {
 
 	// Check each gate's latest verdict using a same-txn sub-Store.
 	vStore := verdict.NewStore(s.tx, s.events, ids.NewGenerator(s.clock),
-		evidence.NewStore(s.tx, s.events, ids.NewGenerator(s.clock), ""))
+		evidence.NewStore(s.tx, s.events, ids.NewGenerator(s.clock), "", s.clock), s.clock)
 	type failure struct {
 		GateID string `json:"gate_id"`
 		Reason string `json:"reason"`

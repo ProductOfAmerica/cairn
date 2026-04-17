@@ -110,7 +110,7 @@ func putEvidence(t *testing.T, d *db.DB, blobRoot string, content []byte) string
 
 	var sha string
 	err = d.WithTx(context.Background(), func(tx *db.Tx) error {
-		ev := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot)
+		ev := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot, clk)
 		res, err := ev.Put("op-ev-001", f.Name(), "application/octet-stream")
 		sha = res.SHA256
 		return err
@@ -151,8 +151,8 @@ func TestReport_HappyPath(t *testing.T) {
 
 	var res verdict.ReportResult
 	err := d.WithTx(context.Background(), func(tx *db.Tx) error {
-		ev := evidence.NewStore(tx, appender, gen, blobRoot)
-		vs := verdict.NewStore(tx, appender, gen, ev)
+		ev := evidence.NewStore(tx, appender, gen, blobRoot, clk)
+		vs := verdict.NewStore(tx, appender, gen, ev, clk)
 		var reportErr error
 		res, reportErr = vs.Report(verdict.ReportInput{
 			OpID:         "op-verdict-001",
@@ -195,7 +195,7 @@ func TestLatest_ReturnsMostRecent(t *testing.T) {
 	report := func(opID, status string) {
 		_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
 			store := verdict.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk),
-				evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), ""))
+				evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), "", clk), clk)
 			_, err := store.Report(verdict.ReportInput{
 				OpID: opID, GateID: gateID, RunID: runID, Status: status,
 				Sha256:       evSha,
@@ -211,7 +211,7 @@ func TestLatest_ReturnsMostRecent(t *testing.T) {
 	var got verdict.LatestResult
 	err := h.WithTx(context.Background(), func(tx *db.Tx) error {
 		store := verdict.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk),
-			evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), ""))
+			evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), "", clk), clk)
 		r, err := store.Latest(gateID)
 		got = r
 		return err
@@ -231,7 +231,7 @@ func TestLatest_StaleOnGateHashChange(t *testing.T) {
 	h, runID, gateID, evSha, _, clk := seed(t)
 	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
 		store := verdict.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk),
-			evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), ""))
+			evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), "", clk), clk)
 		_, err := store.Report(verdict.ReportInput{
 			OpID: "01HNBXBT9J6MGK3Z5R7WVXTM03", GateID: gateID, RunID: runID, Status: "pass",
 			Sha256:       evSha,
@@ -248,7 +248,7 @@ func TestLatest_StaleOnGateHashChange(t *testing.T) {
 	var got verdict.LatestResult
 	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
 		store := verdict.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk),
-			evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), ""))
+			evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), "", clk), clk)
 		r, _ := store.Latest(gateID)
 		got = r
 		return nil
