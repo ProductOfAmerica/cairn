@@ -157,7 +157,7 @@ func (s *Store) Verify(sha string) error {
 		`SELECT id, uri FROM evidence WHERE sha256 = ?`, sha,
 	).Scan(&evidenceID, &uri); err != nil {
 		if err == sql.ErrNoRows {
-			return cairnerr.New(cairnerr.CodeNotFound, "evidence_not_found",
+			return cairnerr.New(cairnerr.CodeNotFound, "not_stored",
 				fmt.Sprintf("no evidence row for sha256 %s", sha))
 		}
 		return fmt.Errorf("query evidence for verify: %w", err)
