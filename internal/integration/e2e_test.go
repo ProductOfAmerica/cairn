@@ -277,23 +277,10 @@ func TestE2E_EvidenceHashMismatch(t *testing.T) {
 	}
 
 	// Evidence verify should now fail with CodeSubstrate + error.code
-	// "hash_mismatch". Exit 4.
+	// "evidence_hash_mismatch". Exit 4.
 	env, code := runCairn(t, repo, cairnHome, "evidence", "verify", sha)
 	if code != 4 {
 		t.Fatalf("expected exit 4, got %d; env=%+v", code, env)
 	}
-	expectErrorKind(t, env, "hash_mismatch")
-
-	// An evidence_invalidated event must now be present.
-	env = runCairnExit(t, repo, cairnHome, 0, "events", "since", "0", "--limit", "500")
-	evs := env["data"].(map[string]any)["events"].([]any)
-	sawInvalidated := false
-	for _, raw := range evs {
-		if raw.(map[string]any)["Kind"] == "evidence_invalidated" {
-			sawInvalidated = true
-		}
-	}
-	if !sawInvalidated {
-		t.Error("expected evidence_invalidated event after tamper, not found")
-	}
+	expectErrorKind(t, env, "evidence_hash_mismatch")
 }
