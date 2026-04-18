@@ -1,0 +1,4 @@
+id: TASK-MAIN
+implements: [REQ-001]
+depends_on: [TASK-DEP]
+required_gates: [AC-001]

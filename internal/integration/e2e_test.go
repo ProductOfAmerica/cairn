@@ -66,16 +66,16 @@ func TestE2E_DepBlocking(t *testing.T) {
 	runCairnExit(t, repo, cairnHome, 0, "init")
 	runCairnExit(t, repo, cairnHome, 0, "task", "plan")
 
-	// Attempt to claim TASK-main while TASK-dep is still open. Should get
-	// exit 2 with error.code="dep_not_done" and details listing TASK-dep.
-	env, code := runCairn(t, repo, cairnHome, "task", "claim", "TASK-main",
+	// Attempt to claim TASK-MAIN while TASK-DEP is still open. Should get
+	// exit 2 with error.code="dep_not_done" and details listing TASK-DEP.
+	env, code := runCairn(t, repo, cairnHome, "task", "claim", "TASK-MAIN",
 		"--agent", "e2e", "--ttl", "30m")
 	if code != 2 {
 		t.Fatalf("expected exit 2, got %d; env=%+v", code, env)
 	}
 	expectErrorKind(t, env, "dep_not_done")
 
-	// Details should mention TASK-dep with status=open.
+	// Details should mention TASK-DEP with status=open.
 	e, _ := env["error"].(map[string]any)
 	details, _ := e["details"].(map[string]any)
 	blocking, _ := details["blocking"].([]any)
@@ -83,15 +83,15 @@ func TestE2E_DepBlocking(t *testing.T) {
 		t.Fatalf("expected 1 blocking dep, got %d", len(blocking))
 	}
 	b := blocking[0].(map[string]any)
-	if b["id"] != "TASK-dep" {
-		t.Errorf("blocking[0].id=%v, want TASK-dep", b["id"])
+	if b["id"] != "TASK-DEP" {
+		t.Errorf("blocking[0].id=%v, want TASK-DEP", b["id"])
 	}
 	if b["status"] != "open" {
 		t.Errorf("blocking[0].status=%v, want open", b["status"])
 	}
 
-	// Complete TASK-dep (claim → evidence → verdict → complete).
-	env = runCairnExit(t, repo, cairnHome, 0, "task", "claim", "TASK-dep",
+	// Complete TASK-DEP (claim → evidence → verdict → complete).
+	env = runCairnExit(t, repo, cairnHome, 0, "task", "claim", "TASK-DEP",
 		"--agent", "e2e", "--ttl", "30m")
 	depRun := env["data"].(map[string]any)["run_id"].(string)
 	depClaim := env["data"].(map[string]any)["claim_id"].(string)
@@ -109,8 +109,8 @@ func TestE2E_DepBlocking(t *testing.T) {
 	)
 	runCairnExit(t, repo, cairnHome, 0, "task", "complete", depClaim)
 
-	// Now TASK-main should claim cleanly.
-	runCairnExit(t, repo, cairnHome, 0, "task", "claim", "TASK-main",
+	// Now TASK-MAIN should claim cleanly.
+	runCairnExit(t, repo, cairnHome, 0, "task", "claim", "TASK-MAIN",
 		"--agent", "e2e", "--ttl", "30m")
 }
 
