@@ -122,9 +122,10 @@ func TestE2E_LeaseExpiry(t *testing.T) {
 	runCairnExit(t, repo, cairnHome, 0, "init")
 	runCairnExit(t, repo, cairnHome, 0, "task", "plan")
 
-	// Claim with a very short TTL (1s).
+	// Claim with a very short TTL (2s) — widened from 1s to absorb Windows
+	// timer resolution (~15.6 ms) and process-start overhead.
 	env := runCairnExit(t, repo, cairnHome, 0, "task", "claim", "TASK-001",
-		"--agent", "agent-A", "--ttl", "1s")
+		"--agent", "agent-A", "--ttl", "2s")
 	firstClaim := env["data"].(map[string]any)["claim_id"].(string)
 	_ = firstClaim
 
@@ -135,8 +136,9 @@ func TestE2E_LeaseExpiry(t *testing.T) {
 		t.Fatalf("expected exit 2 on contested claim, got %d", code)
 	}
 
-	// Wait for the lease to expire. Add a margin for OS timer resolution.
-	time.Sleep(1500 * time.Millisecond)
+	// Wait for the lease to expire. 3 s gives a full second of margin beyond
+	// the 2 s TTL to absorb OS timer jitter and process-start latency.
+	time.Sleep(3 * time.Second)
 
 	// Second claim should now succeed — inline rule-1 cleanup releases the
 	// expired claim and reverts the task to open before the new CAS.
@@ -226,7 +228,37 @@ func TestE2E_OpIDReplay(t *testing.T) {
 	}
 	expectErrorKind(t, env, "task_not_claimable")
 
-	// Fourth invocation reusing the first op_id but with a DIFFERENT command
+	// Fourth invocation with the SAME op_id but DIFFERENT --agent and --ttl
+	// must STILL return the cached result from the first call. The op_log
+	// is keyed on (op_id, kind) — argument changes are ignored on replay.
+	env = runCairnExit(t, repo, cairnHome, 0,
+		"--op-id", opID,
+		"task", "claim", "TASK-001",
+		"--agent", "DIFFERENT-AGENT", "--ttl", "999m",
+	)
+	thirdClaim := env["data"].(map[string]any)["claim_id"].(string)
+	thirdRun := env["data"].(map[string]any)["run_id"].(string)
+	if thirdClaim != firstClaim {
+		t.Fatalf("replay with different args returned new claim_id: first=%s third=%s", firstClaim, thirdClaim)
+	}
+	if thirdRun != firstRun {
+		t.Fatalf("replay with different args returned new run_id: first=%s third=%s", firstRun, thirdRun)
+	}
+
+	// Fifth invocation: still exactly 1 claim_acquired event (no dedupe hole).
+	env = runCairnExit(t, repo, cairnHome, 0, "events", "since", "0", "--limit", "500")
+	evs = env["data"].(map[string]any)["events"].([]any)
+	count = 0
+	for _, raw := range evs {
+		if raw.(map[string]any)["Kind"] == "claim_acquired" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 claim_acquired event after different-args replay, got %d", count)
+	}
+
+	// Fifth invocation reusing the first op_id but with a DIFFERENT command
 	// (task.heartbeat) must error with op_id_kind_mismatch. claim_id must be
 	// the one returned in step 1.
 	env, code = runCairn(t, repo, cairnHome, "--op-id", opID,
@@ -245,42 +277,67 @@ func TestE2E_EvidenceHashMismatch(t *testing.T) {
 	runCairnExit(t, repo, cairnHome, 0, "init")
 	runCairnExit(t, repo, cairnHome, 0, "task", "plan")
 
+	// Claim a task so we have a run to bind a verdict against later.
+	env := runCairnExit(t, repo, cairnHome, 0, "task", "claim", "TASK-001",
+		"--agent", "e2e", "--ttl", "30m")
+	runID := env["data"].(map[string]any)["run_id"].(string)
+
 	// Put legitimate evidence.
 	out := filepath.Join(repo, "ok.txt")
 	if err := os.WriteFile(out, []byte("original"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env := runCairnExit(t, repo, cairnHome, 0, "evidence", "put", out)
+	env = runCairnExit(t, repo, cairnHome, 0, "evidence", "put", out)
 	sha := env["data"].(map[string]any)["sha256"].(string)
 
-	// Corrupt the blob on disk directly. Find the blob under
-	// <cairnHome>/<repoId>/blobs/<sha[:2]>/<sha> and overwrite.
-	// We don't know the repoId, so walk cairnHome.
+	// Locate the blob on disk.
 	var blobPath string
-	err := filepath.WalkDir(cairnHome, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if d.IsDir() {
+	if err := filepath.WalkDir(cairnHome, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
 			return nil
 		}
 		if filepath.Base(path) == sha {
 			blobPath = path
 		}
 		return nil
-	})
-	if err != nil || blobPath == "" {
-		t.Fatalf("could not locate blob for sha=%s under %s: %v", sha, cairnHome, err)
+	}); err != nil || blobPath == "" {
+		t.Fatalf("could not locate blob for sha=%s: %v", sha, err)
 	}
+
+	// Tamper the blob.
 	if err := os.WriteFile(blobPath, []byte("TAMPERED"), 0o644); err != nil {
 		t.Fatalf("could not tamper blob: %v", err)
 	}
 
-	// Evidence verify should now fail with CodeSubstrate + error.code
-	// "evidence_hash_mismatch". Exit 4.
+	// Path 1: `cairn evidence verify` should fail with exit 4 + kind="evidence_hash_mismatch".
 	env, code := runCairn(t, repo, cairnHome, "evidence", "verify", sha)
 	if code != 4 {
-		t.Fatalf("expected exit 4, got %d; env=%+v", code, env)
+		t.Fatalf("evidence verify: expected exit 4, got %d; env=%+v", code, env)
 	}
 	expectErrorKind(t, env, "evidence_hash_mismatch")
+
+	// Path 2: `cairn verdict report` must ALSO refuse to bind. The verdict
+	// code path re-verifies the evidence as a safety gate (spec §5). On
+	// tampered evidence the command exits 4 with a hash-mismatch signal.
+	// The evidence file on disk (from put) still has its original content;
+	// the CLI re-reads + stores the blob for --evidence path. If the blob
+	// is already stored under that sha, report calls evidence.Verify which
+	// re-reads from the blob store (tampered) and rejects.
+	env, code = runCairn(t, repo, cairnHome, "verdict", "report",
+		"--gate", "AC-001", "--run", runID, "--status", "pass",
+		"--evidence", out,
+		"--producer-hash", strings.Repeat("a", 64),
+		"--inputs-hash", strings.Repeat("b", 64),
+	)
+	if code != 4 {
+		t.Fatalf("verdict report on tampered blob: expected exit 4, got %d; env=%+v", code, env)
+	}
+	// error.code may be "hash_mismatch", "evidence_hash_mismatch", or
+	// "blob_collision" depending on which gate fires first. All three
+	// indicate the tampered blob was detected and the verdict was refused.
+	e, _ := env["error"].(map[string]any)
+	kind, _ := e["code"].(string)
+	if kind != "hash_mismatch" && kind != "evidence_hash_mismatch" && kind != "blob_collision" {
+		t.Fatalf("verdict report: expected error.code hash_mismatch, evidence_hash_mismatch, or blob_collision, got %q (env=%+v)", kind, env)
+	}
 }
