@@ -152,6 +152,12 @@ it meaningfully helps.
 
 ### 4.1 `cairn memory append`
 
+> **[Amended 2026-04-18 — see §13.A]** When the caller omits the
+> entity pair, the `memory_appended` event payload MUST omit the
+> `entity_kind` / `entity_id` keys entirely (not present as empty
+> strings). The CLI `AppendResult` response uses `omitempty` and
+> is already correct; the event payload needs to match.
+
 ```
 cairn memory append
     --kind decision|rationale|outcome|failure
@@ -379,6 +385,12 @@ If any mutations → `reconcile_rule_applied(rule=1, affected_entity_ids=[...])`
 
 ### 5.4 Rule 2 — spec-drift staleness
 
+> **[Amended 2026-04-18 — see §13.B]** `gate_def_hash` covers the
+> gate's own subtree `{id, kind, producer: {kind, config}}` only.
+> Edits to requirement-level fields (`scope_in`, `scope_out`, `why`,
+> `title`) do NOT drift the hash and do NOT cause rule 2 to flip a
+> done task to stale.
+
 Implementation: Go loop over `tasks` where `status='done'`. Per task,
 per gate in `required_gates_json`, call `verdict.Store.Latest(gate_id)`
 and check Ship 1's binary-staleness formula (`gate_def_hash match +
@@ -579,6 +591,13 @@ references an id).
 
 ### 5.10 Invalidation semantics — three surfaces
 
+> **[Amended 2026-04-18 — see §13.C, §13.D]** The `verdict report
+> --evidence <path>` surface implicitly puts the evidence if the sha
+> is net-new. Dedupe-by-sha MUST NOT emit a second `evidence_stored`
+> event, and MUST NOT mutate the existing row's `content_type`.
+> First writer wins on both counts.
+
+
 | Surface                                    | Behavior on `evidence_invalidated = true`                                                                 |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
 | `cairn verdict report` (binding new verdict) | **Blocks.** `evidence.Verify` returns `cairnerr.Err{Kind:"evidence_invalidated", Code: CodeValidation}` → exit 1. New kind; Ship 2 behavior change vs. Ship 1. |
@@ -591,6 +610,15 @@ invalidated evidence bind a fresh verdict with fresh evidence before
 completing — agent discipline, not cairn enforcement.
 
 ## 6. Event-log completeness invariant extension
+
+> **[Amended 2026-04-18 — see §13.A]** The `memory_appended` event
+> payload shape is conditional: `{memory_id, kind}` when no entity
+> attached; `{memory_id, kind, entity_kind, entity_id}` when the
+> pair is present. No empty-string keys.
+>
+> **[Amended 2026-04-18 — see §13.C]** `evidence_stored` fires
+> exactly once per distinct sha256, at first insertion. Repeat
+> puts (explicit or implicit) dedupe silently — no event.
 
 Ship 1's assertion — `cairn events since 0 | jq -r '.kind' | sort -u`
 must cover every event kind exercised by the flow — stays. Ship 2 adds
@@ -827,3 +855,275 @@ No other PLAN.md edits. Scope stays frozen.
 | Rule 2 correlated-SQL optimization   | If `rule_2_latency_ms` telemetry exceeds 100ms on real repos.   |
 | Evidence invalidation index          | If `cairn evidence list --invalidated` or similar query lands.  |
 | Memory `kind` enum expansion         | If agents repeatedly misuse `outcome`/`failure` for off-kind entries (Ship 4 retro). |
+
+---
+
+## 13. Amendments (post-merge canary feedback, 2026-04-18)
+
+This section records amendments drafted after a short canary run of
+cairn against a real repository (`dreambot-scripts`, JUnit test
+addition task). Each amendment links to its affected section(s),
+gives concrete evidence from the canary, and notes whether the
+implementation must also change.
+
+`docs/superpowers/amendments-pending.md` tracks which amendments from
+the original post-merge list remain unresolved.
+
+### 13.A — `memory_appended` payload omits absent entity keys
+
+**Affects:** §4.1 (`cairn memory append` response), §6 (event-log
+completeness invariant extension), implementation of
+`internal/memory/store.go Append`.
+
+**Current behavior.** When the caller does not pass `--entity-kind` /
+`--entity-id`, the `memory_appended` event payload emits the keys as
+empty strings:
+
+```json
+{"kind":"decision","entity_kind":"","entity_id":""}
+```
+
+The `AppendResult` JSON response already uses `omitempty` on the
+two entity fields, so the CLI response is fine — the gap is on the
+**event payload**.
+
+**Amended behavior.** When the caller omits the entity pair, the
+`memory_appended` event payload MUST omit the `entity_kind` and
+`entity_id` keys entirely. The absence of a key — not an empty
+string — is the canonical "no entity attached" signal.
+
+```json
+{"kind":"decision"}                                          // no entity
+{"kind":"decision","entity_kind":"task","entity_id":"T-017"} // with entity
+```
+
+**Why.** Downstream consumers SQL-join on `entity_id` to find memory
+entries about a specific entity. SQLite does not distinguish `""`
+from a literal empty-string id; empty strings leak through these
+joins as if they were real entity ids. Requiring key-absence forces
+consumers to use `json_extract(payload, '$.entity_id') IS NOT NULL`
+or equivalent key-exists tests, which is the correct semantic.
+
+**Implementation change.** `internal/memory/store.go Append` must
+construct the event payload map conditionally:
+
+```go
+payload := map[string]any{"kind": in.Kind}
+if in.EntityKind != "" {
+    payload["entity_kind"] = in.EntityKind
+    payload["entity_id"]   = in.EntityID
+}
+```
+
+**Evidence.** Canary event 12 (entity present) vs event 13 (no entity):
+
+```
+# event 12 — entity attached
+"Payload":{"entity_id":"TASK-BT-DECORATOR-TESTS","entity_kind":"task","kind":"decision"}
+
+# event 13 — no entity, current (undesired) shape
+"Payload":{"entity_id":"","entity_kind":"","kind":"failure"}
+```
+
+**Update to §6 table.** The `memory_appended` payload-essentials
+column should read:
+
+> `memory_id`, `kind`, and — only when entity is attached — `entity_kind`, `entity_id`.
+
+### 13.B — `gate_def_hash` scope enumerated
+
+**Affects:** §5.4 rule 2 staleness formula; also clarifies the Ship 1
+design spec §"Task plan" bullet 2 (`2026-04-17-ship-1-core-substrate-design.md`
+lines 226-230) where "the gate subtree" was described without
+enumeration.
+
+**Current behavior.** `gate_def_hash` is treated as opaque throughout
+the Ship 2 spec. §Staleness in `docs/PLAN.md` states:
+
+> The `gate_def_hash` already includes whatever the user chooses to
+> expose to staleness (prompt, temperature, system instruction,
+> producer identity). If vendor version bumps must invalidate
+> verdicts, capture them inside `gate_def_hash` at
+> gate-definition time.
+
+No spec enumerates which YAML fields are under `gate_def_hash`'s
+umbrella. Discoverable only by reading `internal/intent/hash.go`.
+
+**Amended behavior.** The canonical definition:
+
+```
+gate_def_hash = sha256(
+    JCS(
+        {
+            "id":       <gate.id>,
+            "kind":     <gate.kind>,
+            "producer": {
+                "kind":   <gate.producer.kind>,
+                "config": <gate.producer.config>   // full subtree, verbatim
+            }
+        }
+    )
+)
+```
+
+**In scope** (changes drift the hash and trigger staleness re-evaluation):
+- `gate.id`
+- `gate.kind` (`test | property | rubric | human | custom`)
+- `gate.producer.kind` (`executable | human | agent | pipeline`)
+- Every leaf under `gate.producer.config` (including `command`,
+  `pass_on_exit_code`, `reviewer_role`, etc. — whatever the specific
+  producer kind defines).
+
+**Out of scope** (edits to these fields do NOT drift the hash):
+- Requirement-level fields: `id`, `title`, `why`, `scope_in`,
+  `scope_out`. These live on the requirement, not the gate.
+- `required_gates`, `depends_on`, `implements` on task YAML.
+- Task-level `spec_path`, `spec_hash` (tracked separately).
+
+**Why.** Agents editing spec YAML need to know whether their change
+will trigger rule 2 to flip their task to `stale`. The current
+implementation is correct; only the specification was ambiguous.
+
+**Implementation change.** None. Spec catches up to implementation.
+
+**Evidence.** Canary confirmed `gate_def_hash` stayed `8c2c9100…`
+across re-plans after edits to requirement-level fields (`why`,
+`scope_in`, `scope_out` added to REQ-BT-DECORATOR-TESTS.yaml).
+
+### 13.C — `evidence_stored` emitted once per distinct sha256
+
+**Affects:** §3 migration Part B (evidence behavior), §5.10 surface 1
+(`cairn verdict report --evidence <path>` path), implementation of
+`internal/evidence/store.go Put`.
+
+**Current behavior.** `cairn evidence put <path>` emits an
+`evidence_stored` event with the computed sha256. A subsequent
+`cairn verdict report --evidence <same-path>` re-hashes the file and
+emits a **second** `evidence_stored` event for the same sha, because
+verdict report's implicit evidence-put path doesn't short-circuit on
+dedupe.
+
+**Amended behavior.** `evidence_stored` MUST be emitted exactly once
+per distinct sha256, at the moment the evidence row is first inserted.
+Any subsequent call path that re-encounters the same sha (explicit
+`evidence put`, implicit put via `verdict report --evidence`, or any
+future call path) dedupes silently: the existing row is returned and
+no event is emitted.
+
+This upholds Core Invariant 10 — the event log is the source of
+truth for "what happened when." A repeat of an existing datum is not
+a new happening.
+
+**Implementation change.** `internal/evidence/store.go Put`:
+
+- Detect dedupe via SELECT-before-INSERT, or via `INSERT OR IGNORE`
+  + `RowsAffected() == 0` check.
+- Set `PutResult.Dedupe = true` on the hit path (Ship 1's result
+  type already has this field).
+- Gate `events.Appender.Append(tx, evidence_stored)` on `!Dedupe`.
+
+**Evidence.** Canary observed events 6 and 7:
+
+```
+# event 6 — evidence put junit-combined.xml --content-type application/xml
+"Kind":"evidence_stored","EntityID":"E_01KPG…","Payload":{"sha256":"9f3c…","content_type":"application/xml"}
+
+# event 7 — verdict report --evidence junit-combined.xml (SAME sha)
+"Kind":"evidence_stored","EntityID":"E_01KPG…","Payload":{"sha256":"9f3c…","content_type":"application/octet-stream"}
+```
+
+Same `EntityID`, same sha, two events. Amendment removes event 7.
+
+### 13.D — Evidence metadata is first-writer-wins on dedupe
+
+**Affects:** §3 migration Part B (evidence dedupe semantics),
+`internal/evidence/store.go Put`. Adjacent to 13.C but separately
+specified because a behavioral fix to event emission still leaves
+the underlying row-mutation question open.
+
+**Current behavior.** On implicit put via `verdict report --evidence
+<path>`, if the row already exists (sha match), the implementation
+updates `content_type` on the existing row using the new caller's
+default (`application/octet-stream` when no explicit flag was
+passed). This clobbers the canonical metadata set by the original
+explicit `evidence put --content-type application/xml`.
+
+Paired with 13.C, the current net effect is both (a) a spurious
+second event AND (b) silent data loss on the row.
+
+**Amended behavior.** On dedupe-by-sha, the existing row's
+`content_type` MUST be preserved. The caller's `content_type`
+parameter (or default) is ignored. The `Put` path becomes
+strictly additive — once an evidence row lands, its metadata is
+immutable for its lifetime (consistent with migration 002's
+`evidence_only_invalidated_at_updatable` trigger, which permits
+UPDATE only for `invalidated_at`).
+
+Rationale: the explicit `cairn evidence put --content-type X` is
+the caller's canonical registration of the blob's metadata. Later
+implicit paths (`verdict report --evidence`) don't have reliable
+content-type context; letting their default clobber the original is
+data loss.
+
+**Implementation change.** `internal/evidence/store.go Put`:
+
+- On dedupe path (see 13.C): return the existing row as-is; do NOT
+  `UPDATE evidence SET content_type = ?`.
+- If the caller's content_type differs from the stored one, silently
+  prefer the stored value. (Alternative: error on mismatch; rejected
+  because implicit puts don't know what they're implicitly doing.)
+- The `evidence_only_invalidated_at_updatable` trigger already fires
+  RAISE(ABORT) on `UPDATE evidence SET content_type = ?`, so if the
+  implementation currently emits such an UPDATE, it must be firing
+  the trigger. **Re-verify the failure path** during implementation:
+  the canary reported event 7 with the clobbered value, implying
+  either the trigger isn't firing as expected or the code path skips
+  the trigger. Either way, 13.D pins the final semantic.
+
+**Evidence.** Canary events 6 and 7 (shown above in 13.C) — same sha,
+different `content_type` values. Event 6 is the canonical
+registration; event 7's `application/octet-stream` is data loss.
+
+---
+
+### 13.E — Notes for the implementation PR
+
+All four amendments above require spec + implementation changes
+(except 13.B, which is spec-only). The implementation PR should:
+
+1. Land the §4.1, §5.4, §5.10, §3 marker pointers this PR introduces
+   (already in place by the time this amendment PR merges).
+2. Change the code to match: memory event payload conditional,
+   evidence Put dedupe event gating, evidence Put dedupe
+   content_type preservation.
+3. Add regression tests: memory-event-absent-entity-keys,
+   evidence-put-dedupe-single-event, evidence-put-dedupe-preserves-content-type.
+4. **Mandatory: add a direct trigger-coverage regression test.** The
+   test must attempt `UPDATE evidence SET content_type = '...' WHERE
+   id = ...` via raw SQL (bypassing the Store) and assert that the
+   `evidence_only_invalidated_at_updatable` trigger fires with
+   `RAISE(ABORT)` and the expected error message (`"evidence is
+   append-only except invalidated_at"`). This is distinct from
+   `TestEvidenceUpdateRestricted` (which covers the `sha256` column);
+   add a `content_type` case specifically. Migration 002's trigger
+   is supposed to cover this but the canary's event 7 suggests the
+   current Put path may sidestep it.
+5. **If the trigger-coverage test in (4) PASSES** with the current
+   Ship 2 code, that means the trigger does fire — and the event 7
+   canary observation was caused by something other than a raw
+   UPDATE (e.g. the Put path using `INSERT OR REPLACE`, which
+   SQLite treats as DELETE + INSERT and bypasses UPDATE triggers).
+   In that case the root cause is a Ship 2 Core Invariant violation
+   — `evidence_no_delete` should have blocked the REPLACE's delete
+   half. File a SEPARATE issue titled "Ship 2 regression: evidence
+   row DELETE path bypasses evidence_no_delete trigger" and track
+   it independently from this amendment PR.
+6. **If the trigger-coverage test in (4) FAILS** (meaning the UPDATE
+   really does go through), the bug is narrower: the trigger's
+   `WHEN` clause is wrong and permits an unintended mutation. Fix
+   the trigger and land it in the same PR as 13.C/D, tagged as a
+   Ship 2 correction.
+
+The triage between (5) and (6) is the first concrete thing the
+implementation PR should resolve, before touching any Put-path code.
+Root cause before remediation.
