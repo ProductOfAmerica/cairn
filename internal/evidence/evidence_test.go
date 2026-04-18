@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -312,5 +313,75 @@ func TestPut_CommitWindow_VerifyReturnsNotStored(t *testing.T) {
 	var ce *cairnerr.Err
 	if !errors.As(verifyErr, &ce) || ce.Kind != "not_stored" {
 		t.Fatalf("expected cairnerr kind=not_stored, got %+v", verifyErr)
+	}
+}
+
+func TestEvidenceUpdateRestricted(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "state.db")
+	h, err := db.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	// Seed one evidence row via direct SQL (Store not under test here).
+	_, err = h.SQL().Exec(
+		`INSERT INTO evidence (id, sha256, uri, bytes, content_type, created_at)
+		 VALUES ('E-1',
+		         '0000000000000000000000000000000000000000000000000000000000000001',
+		         '/tmp/x', 1, 'text/plain', 100)`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// UPDATE that mutates sha256 must fail with RAISE.
+	_, err = h.SQL().Exec(
+		`UPDATE evidence SET sha256 =
+		   '0000000000000000000000000000000000000000000000000000000000000002'
+		 WHERE id = 'E-1'`,
+	)
+	if err == nil {
+		t.Fatal("expected UPDATE to fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "evidence is append-only except invalidated_at") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// UPDATE of invalidated_at only must succeed.
+	_, err = h.SQL().Exec(
+		`UPDATE evidence SET invalidated_at = 123 WHERE id = 'E-1'`,
+	)
+	if err != nil {
+		t.Fatalf("UPDATE invalidated_at should succeed: %v", err)
+	}
+}
+
+func TestEvidenceDeleteBlocked(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "state.db")
+	h, err := db.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	_, err = h.SQL().Exec(
+		`INSERT INTO evidence (id, sha256, uri, bytes, content_type, created_at)
+		 VALUES ('E-1',
+		         '0000000000000000000000000000000000000000000000000000000000000001',
+		         '/tmp/x', 1, 'text/plain', 100)`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = h.SQL().Exec(`DELETE FROM evidence WHERE id = 'E-1'`)
+	if err == nil {
+		t.Fatal("expected DELETE to fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "evidence rows cannot be deleted") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
