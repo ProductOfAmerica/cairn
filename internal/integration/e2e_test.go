@@ -156,18 +156,13 @@ func TestE2E_LeaseExpiry(t *testing.T) {
 	for _, raw := range evs {
 		e := raw.(map[string]any)
 		kind, _ := e["Kind"].(string)
-		payloadRaw := e["Payload"]
-		var payloadStr string
-		switch p := payloadRaw.(type) {
-		case string:
-			payloadStr = p
-		case []byte:
-			payloadStr = string(p)
-		}
-		if kind == "claim_released" && strings.Contains(payloadStr, `"reason":"expired"`) {
+		// Payload is unmarshalled as map[string]any by the JSON decoder.
+		payload, _ := e["Payload"].(map[string]any)
+		reason, _ := payload["reason"].(string)
+		if kind == "claim_released" && reason == "expired" {
 			sawExpired = true
 		}
-		if kind == "task_status_changed" && strings.Contains(payloadStr, `"reason":"lease_expired"`) {
+		if kind == "task_status_changed" && reason == "lease_expired" {
 			sawLeaseExpiredTransition = true
 		}
 	}
