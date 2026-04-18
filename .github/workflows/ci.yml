@@ -29,21 +29,27 @@ jobs:
         run: go test -race ./...
 
   # Invariant 7 proof — offline-capable.
-  # SKIPPED ON PRs. Free-tier GH runners reproducibly hang on ANY Go tooling
-  # invocation in this secondary job (go mod download AND go build both hung
-  # >10min on separate PR runs). Job-level timeout-minutes doesn't fire
-  # because the stall is at syscall level and unresponsive to GH's kill
-  # signals. Matrix jobs (same commit, same cache, same Go version) complete
-  # in 20-30s, so the code is sound — it's a runner-pool issue we can't fix
-  # from the workflow. Run manually via `gh workflow run ci.yml` or on push
-  # to master/main if a non-rate-limited runner is available.
+  #
+  # The prior hangs were caused by golang/go#76375: proxy.golang.org's TLS
+  # handshake stalls indefinitely over IPv6 on some GH runner pools. Go's
+  # net resolver prefers IPv6 by default; the TCP syscall never returns,
+  # step- and job-level timeout-minutes can't deliver kill signals to
+  # kernel-stalled syscalls. Matrix jobs coincidentally landed on pools
+  # with working IPv6; the offline job's pool did not.
+  #
+  # Workaround: disable IPv6 on the runner before any Go network op.
+  # Go falls back to IPv4 cleanly, proxy.golang.org + sum.golang.org
+  # respond, build/test proceed.
   offline:
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+      - name: Disable IPv6 (golang/go#76375 workaround)
+        run: |
+          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+          sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25.x"
@@ -54,8 +60,7 @@ jobs:
         timeout-minutes: 4
         run: |
           sudo iptables -I OUTPUT -o lo -j ACCEPT
-          sudo ip6tables -I OUTPUT -o lo -j ACCEPT
           sudo iptables -P OUTPUT DROP
-          sudo ip6tables -P OUTPUT DROP
+          # ip6tables skipped — IPv6 already disabled system-wide.
           GOFLAGS="-mod=readonly" GOSUMDB=off GOPROXY=off \
             go test -race ./...
