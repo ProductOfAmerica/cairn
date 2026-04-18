@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ProductOfAmerica/cairn/internal/clock"
@@ -255,5 +256,59 @@ func TestLatest_StaleOnGateHashChange(t *testing.T) {
 	})
 	if got.Fresh {
 		t.Fatalf("verdict should be stale after gate_def_hash mutation")
+	}
+}
+
+func TestLatest_SurfacesEvidenceInvalidation(t *testing.T) {
+	h, runID, gateID, evSha, _, clk := seed(t)
+
+	// Report a passing verdict bound to evSha.
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := verdict.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk),
+			evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), "", clk), clk)
+		_, err := store.Report(verdict.ReportInput{
+			OpID:         "01HNBXBT9J6MGK3Z5R7WVXTM0R",
+			GateID:       gateID,
+			RunID:        runID,
+			Status:       "pass",
+			Sha256:       evSha,
+			ProducerHash: strings.Repeat("a", 64),
+			InputsHash:   strings.Repeat("b", 64),
+		})
+		return err
+	})
+
+	// Invalidate the evidence row.
+	if _, err := h.SQL().Exec(
+		`UPDATE evidence SET invalidated_at = 999 WHERE sha256 = ?`, evSha,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Latest should surface evidence_invalidated=true.
+	var r verdict.LatestResult
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := verdict.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk),
+			evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), "", clk), clk)
+		r, _ = store.Latest(gateID)
+		return nil
+	})
+	if r.Verdict == nil {
+		t.Fatal("no verdict returned")
+	}
+	if !r.Verdict.EvidenceInvalidated {
+		t.Error("EvidenceInvalidated = false, want true")
+	}
+
+	// History must surface the same flag per row.
+	var hist []verdict.VerdictWithFresh
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := verdict.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk),
+			evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), "", clk), clk)
+		hist, _ = store.History(gateID, 10)
+		return nil
+	})
+	if len(hist) != 1 || !hist[0].EvidenceInvalidated {
+		t.Errorf("history invalidation flag missing: %+v", hist)
 	}
 }

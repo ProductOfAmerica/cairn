@@ -150,16 +150,31 @@ func (s *Store) Put(opID, path, contentType string) (PutResult, error) {
 // Verify reads the blob for the given sha256, recomputes its hash, and
 // returns nil if it matches. On mismatch it emits evidence_invalidated and
 // returns a CodeSubstrate error.
+//
+// If the evidence row has been invalidated (invalidated_at IS NOT NULL),
+// Verify returns a CodeValidation error with kind "evidence_invalidated"
+// BEFORE touching the blob. This blocks verdict reports from citing stale
+// evidence that a reconcile has already flagged.
 func (s *Store) Verify(sha string) error {
 	var evidenceID, uri string
+	var invalidatedAt sql.NullInt64
 	if err := s.tx.QueryRow(
-		`SELECT id, uri FROM evidence WHERE sha256 = ?`, sha,
-	).Scan(&evidenceID, &uri); err != nil {
+		`SELECT id, uri, invalidated_at FROM evidence WHERE sha256 = ?`, sha,
+	).Scan(&evidenceID, &uri, &invalidatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return cairnerr.New(cairnerr.CodeNotFound, "not_stored",
 				fmt.Sprintf("no evidence row for sha256 %s", sha))
 		}
 		return fmt.Errorf("query evidence for verify: %w", err)
+	}
+
+	if invalidatedAt.Valid {
+		return cairnerr.New(cairnerr.CodeValidation, "evidence_invalidated",
+			"evidence was invalidated by a prior reconcile").
+			WithDetails(map[string]any{
+				"evidence_id":    evidenceID,
+				"invalidated_at": invalidatedAt.Int64,
+			})
 	}
 
 	data, err := os.ReadFile(uri)

@@ -358,6 +358,63 @@ func TestEvidenceUpdateRestricted(t *testing.T) {
 	}
 }
 
+func TestVerify_RejectsInvalidatedRow(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "state.db")
+	h, err := db.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	// Seed one valid blob + evidence row, then mark invalidated.
+	blobRoot := t.TempDir()
+	src := filepath.Join(t.TempDir(), "src.txt")
+	if err := os.WriteFile(src, []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	clk := clock.NewFake(100)
+	var sha string
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot, clk)
+		r, err := store.Put("01HNBXBT9J6MGK3Z5R7WVXTM0A", src, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sha = r.SHA256
+		return nil
+	})
+
+	// Mark row invalidated directly (trigger permits this single-column UPDATE).
+	if _, err := h.SQL().Exec(
+		`UPDATE evidence SET invalidated_at = 200 WHERE sha256 = ?`, sha,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify should now fail with evidence_invalidated (not hash_mismatch).
+	var verr error
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot, clk)
+		verr = store.Verify(sha)
+		return nil
+	})
+	if verr == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var ce *cairnerr.Err
+	if !errors.As(verr, &ce) {
+		t.Fatalf("not cairnerr.Err: %T", verr)
+	}
+	if ce.Kind != "evidence_invalidated" {
+		t.Errorf("kind = %q, want evidence_invalidated", ce.Kind)
+	}
+	if ce.Code != cairnerr.CodeValidation {
+		t.Errorf("code = %q, want validation", ce.Code)
+	}
+}
+
 func TestEvidenceDeleteBlocked(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "state.db")
