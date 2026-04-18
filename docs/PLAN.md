@@ -375,7 +375,7 @@ All commands output JSON by default. Add `--format human` where it meaningfully 
 1. For every `claims` row where `expires_at < now` and `released_at IS NULL`, mark released. For every `tasks` row in `claimed|in_progress|gate_pending` with no live claim, revert to `open`.
 2. For every `done` task, recompute staleness for each required gate. If any required gate is stale, flip task to `stale`.
 3. Probe 5% of evidence rows (random sample, bounded to 100 per run). For any whose file is missing or hash mismatches, mark evidence invalid and flag dependent verdicts.
-4. For every `runs` row in-progress older than a configurable threshold with no recent heartbeat, mark orphaned.
+4. For every `runs` row where `ended_at IS NULL` and the associated `claims.released_at + 10min < now`, mark orphaned (outcome=`orphaned`). The 10-minute grace absorbs clock skew between agents and DB and ensures rule 1's just-released claims are not immediately orphaned; the rule must therefore run after rule 1 within the same transaction.
 5. Report any task whose `required_gates` include gate IDs not present in state. (Authoring errors surfaced.)
 
 Each rule that mutates state emits an event (`reconcile_rule_applied`) inside the transaction. See §"Event-log completeness invariant".
@@ -446,7 +446,7 @@ Invariant 10 says `cairn events since <ts>` is the single source of truth for "w
 | `evidence_invalidated`     | reconcile rule 3                        | evidence_id, reason                             |
 | `verdict_bound`            | `cairn verdict report`                  | verdict_id, gate_id, run_id, status, all hashes |
 | `memory_appended`          | `cairn memory append`                   | memory_id, kind, entity_kind, entity_id         |
-| `reconcile_started`        | `cairn reconcile`                       | reconcile_id, dry_run                           |
+| `reconcile_started`        | `cairn reconcile`                       | reconcile_id                                    |
 | `reconcile_rule_applied`   | each reconcile rule that mutated        | reconcile_id, rule_number, affected_entity_ids  |
 | `reconcile_ended`          | `cairn reconcile`                       | reconcile_id, stats                             |
 | `spec_materialized`        | `cairn task plan` when a spec hash changes | spec_path, old_hash, new_hash                |
