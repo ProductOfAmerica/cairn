@@ -38,7 +38,12 @@ jobs:
         run: go mod download
       - name: Test with network severed
         run: |
-          # Block outbound network via fresh net namespace. Tests must not
-          # require external services. Proves Invariant 7 (offline-capable).
-          sudo unshare --net --mount --fork --pid --user --map-root-user \
-            bash -c 'ip link set lo up && go test -race ./...'
+          # Block outbound non-loopback traffic via iptables. Proves
+          # Invariant 7 (offline-capable): tests must not require external
+          # services. Staying in the runner's user + env keeps the primed
+          # module cache accessible.
+          sudo iptables -I OUTPUT -o lo -j ACCEPT
+          sudo ip6tables -I OUTPUT -o lo -j ACCEPT
+          sudo iptables -P OUTPUT DROP
+          sudo ip6tables -P OUTPUT DROP
+          go test -race ./...
