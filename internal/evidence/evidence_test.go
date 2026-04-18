@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -312,5 +313,132 @@ func TestPut_CommitWindow_VerifyReturnsNotStored(t *testing.T) {
 	var ce *cairnerr.Err
 	if !errors.As(verifyErr, &ce) || ce.Kind != "not_stored" {
 		t.Fatalf("expected cairnerr kind=not_stored, got %+v", verifyErr)
+	}
+}
+
+func TestEvidenceUpdateRestricted(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "state.db")
+	h, err := db.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	// Seed one evidence row via direct SQL (Store not under test here).
+	_, err = h.SQL().Exec(
+		`INSERT INTO evidence (id, sha256, uri, bytes, content_type, created_at)
+		 VALUES ('E-1',
+		         '0000000000000000000000000000000000000000000000000000000000000001',
+		         '/tmp/x', 1, 'text/plain', 100)`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// UPDATE that mutates sha256 must fail with RAISE.
+	_, err = h.SQL().Exec(
+		`UPDATE evidence SET sha256 =
+		   '0000000000000000000000000000000000000000000000000000000000000002'
+		 WHERE id = 'E-1'`,
+	)
+	if err == nil {
+		t.Fatal("expected UPDATE to fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "evidence is append-only except invalidated_at") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// UPDATE of invalidated_at only must succeed.
+	_, err = h.SQL().Exec(
+		`UPDATE evidence SET invalidated_at = 123 WHERE id = 'E-1'`,
+	)
+	if err != nil {
+		t.Fatalf("UPDATE invalidated_at should succeed: %v", err)
+	}
+}
+
+func TestVerify_RejectsInvalidatedRow(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "state.db")
+	h, err := db.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	// Seed one valid blob + evidence row, then mark invalidated.
+	blobRoot := t.TempDir()
+	src := filepath.Join(t.TempDir(), "src.txt")
+	if err := os.WriteFile(src, []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	clk := clock.NewFake(100)
+	var sha string
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot, clk)
+		r, err := store.Put("01HNBXBT9J6MGK3Z5R7WVXTM0A", src, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sha = r.SHA256
+		return nil
+	})
+
+	// Mark row invalidated directly (trigger permits this single-column UPDATE).
+	if _, err := h.SQL().Exec(
+		`UPDATE evidence SET invalidated_at = 200 WHERE sha256 = ?`, sha,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify should now fail with evidence_invalidated (not hash_mismatch).
+	var verr error
+	_ = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := evidence.NewStore(tx, events.NewAppender(clk), ids.NewGenerator(clk), blobRoot, clk)
+		verr = store.Verify(sha)
+		return nil
+	})
+	if verr == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var ce *cairnerr.Err
+	if !errors.As(verr, &ce) {
+		t.Fatalf("not cairnerr.Err: %T", verr)
+	}
+	if ce.Kind != "evidence_invalidated" {
+		t.Errorf("kind = %q, want evidence_invalidated", ce.Kind)
+	}
+	if ce.Code != cairnerr.CodeValidation {
+		t.Errorf("code = %q, want validation", ce.Code)
+	}
+}
+
+func TestEvidenceDeleteBlocked(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "state.db")
+	h, err := db.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	_, err = h.SQL().Exec(
+		`INSERT INTO evidence (id, sha256, uri, bytes, content_type, created_at)
+		 VALUES ('E-1',
+		         '0000000000000000000000000000000000000000000000000000000000000001',
+		         '/tmp/x', 1, 'text/plain', 100)`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = h.SQL().Exec(`DELETE FROM evidence WHERE id = 'E-1'`)
+	if err == nil {
+		t.Fatal("expected DELETE to fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "evidence rows cannot be deleted") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -194,17 +194,18 @@ func (s *Store) Report(in ReportInput) (ReportResult, error) {
 
 // Verdict is the on-disk shape returned by Latest / History.
 type Verdict struct {
-	ID           string `json:"verdict_id"`
-	RunID        string `json:"run_id"`
-	GateID       string `json:"gate_id"`
-	Status       string `json:"status"`
-	ScoreJSON    string `json:"score_json,omitempty"`
-	ProducerHash string `json:"producer_hash"`
-	GateDefHash  string `json:"gate_def_hash"`
-	InputsHash   string `json:"inputs_hash"`
-	EvidenceID   string `json:"evidence_id,omitempty"`
-	BoundAt      int64  `json:"bound_at"`
-	Sequence     int64  `json:"sequence"`
+	ID                  string `json:"verdict_id"`
+	RunID               string `json:"run_id"`
+	GateID              string `json:"gate_id"`
+	Status              string `json:"status"`
+	ScoreJSON           string `json:"score_json,omitempty"`
+	ProducerHash        string `json:"producer_hash"`
+	GateDefHash         string `json:"gate_def_hash"`
+	InputsHash          string `json:"inputs_hash"`
+	EvidenceID          string `json:"evidence_id,omitempty"`
+	BoundAt             int64  `json:"bound_at"`
+	Sequence            int64  `json:"sequence"`
+	EvidenceInvalidated bool   `json:"evidence_invalidated"`
 }
 
 // LatestResult is the envelope shape for `verdict latest`.
@@ -229,14 +230,17 @@ func (s *Store) Latest(gateID string) (LatestResult, error) {
 
 	var v Verdict
 	var score, evID sql.NullString
+	var invalidated sql.NullInt64
 	err = s.tx.QueryRow(
-		`SELECT id, run_id, gate_id, status, score_json, producer_hash,
-                gate_def_hash, inputs_hash, evidence_id, bound_at, sequence
-         FROM verdicts WHERE gate_id=?
-         ORDER BY bound_at DESC, sequence DESC LIMIT 1`,
+		`SELECT v.id, v.run_id, v.gate_id, v.status, v.score_json, v.producer_hash,
+                v.gate_def_hash, v.inputs_hash, v.evidence_id, v.bound_at, v.sequence,
+                e.invalidated_at
+         FROM verdicts v LEFT JOIN evidence e ON e.id = v.evidence_id
+         WHERE v.gate_id=?
+         ORDER BY v.bound_at DESC, v.sequence DESC LIMIT 1`,
 		gateID,
 	).Scan(&v.ID, &v.RunID, &v.GateID, &v.Status, &score, &v.ProducerHash,
-		&v.GateDefHash, &v.InputsHash, &evID, &v.BoundAt, &v.Sequence)
+		&v.GateDefHash, &v.InputsHash, &evID, &v.BoundAt, &v.Sequence, &invalidated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LatestResult{Verdict: nil, Fresh: false}, nil
 	}
@@ -249,6 +253,7 @@ func (s *Store) Latest(gateID string) (LatestResult, error) {
 	if evID.Valid {
 		v.EvidenceID = evID.String
 	}
+	v.EvidenceInvalidated = invalidated.Valid
 	fresh := v.GateDefHash == curGateHash && v.Status == "pass"
 	return LatestResult{Verdict: &v, Fresh: fresh}, nil
 }
@@ -272,10 +277,12 @@ func (s *Store) History(gateID string, limit int) ([]VerdictWithFresh, error) {
 	}
 
 	rows, err := s.tx.Query(
-		`SELECT id, run_id, gate_id, status, score_json, producer_hash,
-                gate_def_hash, inputs_hash, evidence_id, bound_at, sequence
-         FROM verdicts WHERE gate_id=?
-         ORDER BY bound_at DESC, sequence DESC LIMIT ?`,
+		`SELECT v.id, v.run_id, v.gate_id, v.status, v.score_json, v.producer_hash,
+                v.gate_def_hash, v.inputs_hash, v.evidence_id, v.bound_at, v.sequence,
+                e.invalidated_at
+         FROM verdicts v LEFT JOIN evidence e ON e.id = v.evidence_id
+         WHERE v.gate_id=?
+         ORDER BY v.bound_at DESC, v.sequence DESC LIMIT ?`,
 		gateID, limit,
 	)
 	if err != nil {
@@ -287,8 +294,9 @@ func (s *Store) History(gateID string, limit int) ([]VerdictWithFresh, error) {
 	for rows.Next() {
 		var v Verdict
 		var score, evID sql.NullString
+		var invalidated sql.NullInt64
 		if err := rows.Scan(&v.ID, &v.RunID, &v.GateID, &v.Status, &score, &v.ProducerHash,
-			&v.GateDefHash, &v.InputsHash, &evID, &v.BoundAt, &v.Sequence); err != nil {
+			&v.GateDefHash, &v.InputsHash, &evID, &v.BoundAt, &v.Sequence, &invalidated); err != nil {
 			return nil, err
 		}
 		if score.Valid {
@@ -297,6 +305,7 @@ func (s *Store) History(gateID string, limit int) ([]VerdictWithFresh, error) {
 		if evID.Valid {
 			v.EvidenceID = evID.String
 		}
+		v.EvidenceInvalidated = invalidated.Valid
 		fresh := v.GateDefHash == curGateHash && v.Status == "pass"
 		out = append(out, VerdictWithFresh{Verdict: v, Fresh: fresh})
 	}

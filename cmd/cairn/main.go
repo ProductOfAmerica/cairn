@@ -45,6 +45,8 @@ func main() {
 	root.AddCommand(newVerdictCmd(app))
 	root.AddCommand(newEvidenceCmd(app))
 	root.AddCommand(newEventsCmd(app))
+	root.AddCommand(newMemoryCmd(app))
+	root.AddCommand(newReconcileCmd(app))
 
 	if err := root.Execute(); err != nil {
 		// cobra already printed a usage message; emit a JSON envelope + exit.
