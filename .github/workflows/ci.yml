@@ -29,35 +29,30 @@ jobs:
         run: go test -race ./...
 
   # Invariant 7 proof — offline-capable.
-  # GH free-tier runners reproducibly hang (>10min) on `go mod download` in
-  # secondary jobs, even with step-level timeouts (kernel-stalled syscalls
-  # aren't responsive to GH's control-plane kill signals; only job-level
-  # timeout eventually forces a runner restart). The matrix job already
-  # proves the code compiles + tests green across 3 OSes, so this job is
-  # NOT run on PRs. Trigger manually via `gh workflow run ci.yml` or when
-  # pushing to master/main.
+  # Relies on actions/setup-go@v5 cache restore to prime the module cache.
+  # Does NOT run `go mod download` (that call previously hung for >10min on
+  # free-tier runners, likely on sum.golang.org verification). Blocks
+  # outbound non-loopback traffic via iptables, then runs the full suite.
+  # If a test needs network, it fails cleanly with a connection error —
+  # which IS the Invariant 7 signal.
   offline:
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 8
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25.x"
-      - name: Prime module cache with network
+      - name: Warm up the build cache (no network sever yet)
         timeout-minutes: 3
-        run: go mod download
-      - name: Test with network severed
-        timeout-minutes: 5
+        run: go build ./...
+      - name: Test offline (iptables OUTPUT DROP except loopback)
+        timeout-minutes: 4
         run: |
-          # Block outbound non-loopback traffic via iptables. Proves
-          # Invariant 7 (offline-capable): tests must not require external
-          # services. Staying in the runner's user + env keeps the primed
-          # module cache accessible.
           sudo iptables -I OUTPUT -o lo -j ACCEPT
           sudo ip6tables -I OUTPUT -o lo -j ACCEPT
           sudo iptables -P OUTPUT DROP
           sudo ip6tables -P OUTPUT DROP
-          go test -race ./...
+          GOFLAGS="-mod=readonly" GOSUMDB=off GOPROXY=off \
+            go test -race ./...
