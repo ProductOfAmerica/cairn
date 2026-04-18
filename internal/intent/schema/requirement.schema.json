@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CairnRequirement",
+  "type": "object",
+  "required": ["id", "title", "gates"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "pattern": "^REQ-[0-9A-Z_-]+$" },
+    "title": { "type": "string", "minLength": 1 },
+    "why": { "type": "string" },
+    "scope_in": { "type": "array", "items": { "type": "string" } },
+    "scope_out": { "type": "array", "items": { "type": "string" } },
+    "gates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "producer"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Z]+-[0-9A-Z_-]+$" },
+          "kind": { "enum": ["test", "property", "rubric", "human", "custom"] },
+          "producer": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": { "enum": ["executable", "human", "agent", "pipeline"] },
+              "config": { "type": "object" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

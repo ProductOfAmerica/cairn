@@ -1,0 +1,11 @@
+id: REQ-001
+title: spec-edit-stale scenario
+why: verify gate_def_hash drift flips verdict fresh=false
+gates:
+  - id: AC-001
+    kind: test
+    producer:
+      kind: executable
+      config:
+        command: [echo, ok]
+        pass_on_exit_code: 0

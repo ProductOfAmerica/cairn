@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:      # lets `offline` be re-run on demand without a code push.
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        go: ["1.25.x"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - name: go mod verify
+        run: go mod verify
+      - name: go vet
+        run: go vet ./...
+      - name: go build
+        run: go build ./...
+      - name: go test
+        run: go test -race ./...
+
+  # Invariant 7 proof — offline-capable.
+  #
+  # The prior hangs were caused by golang/go#76375: proxy.golang.org's TLS
+  # handshake stalls indefinitely over IPv6 on some GH runner pools. Go's
+  # net resolver prefers IPv6 by default; the TCP syscall never returns,
+  # step- and job-level timeout-minutes can't deliver kill signals to
+  # kernel-stalled syscalls. Matrix jobs coincidentally landed on pools
+  # with working IPv6; the offline job's pool did not.
+  #
+  # Workaround: disable IPv6 on the runner before any Go network op.
+  # Go falls back to IPv4 cleanly, proxy.golang.org + sum.golang.org
+  # respond, build/test proceed.
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Disable IPv6 (golang/go#76375 workaround)
+        run: |
+          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+          sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - name: Warm up the build cache (no network sever yet)
+        timeout-minutes: 3
+        run: go build ./...
+      - name: Test offline (iptables OUTPUT DROP except loopback)
+        timeout-minutes: 4
+        run: |
+          sudo iptables -I OUTPUT -o lo -j ACCEPT
+          sudo iptables -P OUTPUT DROP
+          # ip6tables skipped — IPv6 already disabled system-wide.
+          GOFLAGS="-mod=readonly" GOSUMDB=off GOPROXY=off \
+            go test -race ./...
