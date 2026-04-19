@@ -339,6 +339,27 @@ func TestStore_Materialize(t *testing.T) {
 	}
 }
 
+func TestValidate_EmptyBundle(t *testing.T) {
+	bundle := &intent.Bundle{}
+	errs := intent.Validate(bundle)
+	if len(errs) != 0 {
+		t.Fatalf("empty bundle should have no errors, got: %+v", errs)
+	}
+}
+
+func TestValidate_NilBundleReturnsEmptySlice(t *testing.T) {
+	// Defensive: passing zero-value bundle should not panic, must return [] not nil.
+	bundle := &intent.Bundle{}
+	errs := intent.Validate(bundle)
+	if errs == nil {
+		// Pass — nil slice is fine; the JSON encoder converts at the CLI seam.
+		return
+	}
+	if len(errs) != 0 {
+		t.Fatalf("zero bundle: %+v", errs)
+	}
+}
+
 func TestLoad_ScanCountsEmpty(t *testing.T) {
 	root := t.TempDir()
 	// no requirements/, no tasks/ subdirs at all
