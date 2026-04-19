@@ -1,0 +1,14 @@
+# cairn-derived: source-hash=269022f669b7e80fa2e26b5240ebcf323b20f19acb6364f0b1f50c9e6461cef9 source-path=testdata/skill-tests/yaml-authoring/stable-prose/design.md derived-at=2026-04-19T00:00:00Z
+id: REQ-FX-001
+title: fixture stable-prose
+why: Static fixture; no real motivation.
+scope_in: [fixture/**]
+scope_out: []
+gates:
+  - id: AC-001
+    kind: test
+    producer:
+      kind: executable
+      config:
+        command: [go, test, ./fixture/...]
+        pass_on_exit_code: 0
