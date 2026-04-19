@@ -18,7 +18,6 @@ func newSpecCmd(app *App) *cobra.Command {
 		Short: "Schema + referential + uniqueness validation",
 		Long: `Schema + referential + uniqueness validation.
 
-Flags:
   --path <dir>   Directory to scan (default: specs/).
 
 Response includes:
