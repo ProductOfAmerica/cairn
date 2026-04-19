@@ -218,3 +218,45 @@ func TestSpecValidateRejectsRenamedExample(t *testing.T) {
 		t.Errorf("exit code: want 1, got %d", cmd.ProcessState.ExitCode())
 	}
 }
+
+func TestSpecValidateHelpDocumentsEnvelope(t *testing.T) {
+	cmd := exec.Command(cairnBinary, "spec", "validate", "--help")
+	cmd.Dir = t.TempDir()
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("spec validate --help failed: %v\n%s", err, out.String())
+	}
+	help := out.String()
+	for _, want := range []string{
+		"specs_scanned",
+		"counts files loaded, not files passed",
+		"errors",
+	} {
+		if !bytes.Contains([]byte(help), []byte(want)) {
+			t.Errorf("help text missing %q\nfull output:\n%s", want, help)
+		}
+	}
+}
+
+func TestSpecInitHelpDocumentsForceFlag(t *testing.T) {
+	cmd := exec.Command(cairnBinary, "spec", "init", "--help")
+	cmd.Dir = t.TempDir()
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("spec init --help failed: %v\n%s", err, out.String())
+	}
+	help := out.String()
+	for _, want := range []string{
+		"--force",
+		".example",
+		"Do not rename",
+	} {
+		if !bytes.Contains([]byte(help), []byte(want)) {
+			t.Errorf("help text missing %q\nfull output:\n%s", want, help)
+		}
+	}
+}
