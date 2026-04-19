@@ -25,6 +25,9 @@ jobs:
         run: go vet ./...
       - name: go build
         run: go build ./...
+      - name: make test-skills-verify (linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: make test-skills-verify
       - name: go test
         run: go test -race ./...
 
