@@ -324,7 +324,7 @@ required_gates: [AC-001, AC-002]
 ### Spec-format posture in the Superpowers ecosystem
 
 - **Ships 1–2:** hand-author YAML in toy repos for dogfood. No integration with Superpowers `brainstorming` or `writing-plans`.
-- **Ship 3:** **additive sidecar**. Prose specs under `docs/superpowers/specs/*.md` stay exactly as Superpowers produces them. Cairn YAML lives alongside under `specs/requirements/*.yaml` and `specs/tasks/*.yaml`, hand-authored by the agent after the prose spec is approved. The `using-cairn` skill teaches the agent to emit both: prose for human review, YAML for machine verification.
+- **Ship 3:** **additive sidecar with silent derivation.** Prose specs under `docs/superpowers/specs/*.md` (brainstorming output) and `docs/superpowers/plans/*.md` (writing-plans output) stay exactly as Superpowers produces them. Cairn YAML lives alongside under `specs/requirements/*.yaml` (derived from design prose) and `specs/tasks/*.yaml` (derived from plan prose). Derivation is silent, deterministic, and byte-identical on re-run: the human never authors YAML directly. The `using-cairn` skill owns the authoring flow, elicitation checklist, and source-hash drift detection. See `docs/superpowers/specs/2026-04-18-ship-3-superpowers-integration-design.md` for the full protocol.
 - **Post-Ship 4:** revisit. Maybe YAML becomes canonical; maybe prose+YAML coexist long-term; maybe a skill auto-derives YAML from approved prose. No decision now.
 
 ---
@@ -509,7 +509,10 @@ Narrowed skill integration scope (from Q2 decision):
 - **New skill in the cairn plugin: `using-cairn`** — teaches agents when and how to invoke cairn, enumerates the CLI, shows the claim → evidence → verdict → complete cycle with worked examples. References `superpowers:subagent-driven-development` and `superpowers:verification-before-completion` by fully-qualified name.
 - **Wrap `superpowers:subagent-driven-development`** — cairn ships its own variant (e.g. `cairn:subagent-driven-development-with-verdicts`) that layers `cairn task claim` before dispatch, `cairn evidence put` + `cairn verdict report` after the gate runs, `cairn task complete` at the end. The original Superpowers skill is **not modified**; the `using-cairn` skill tells agents when to prefer cairn's variant.
 - **Wrap `superpowers:verification-before-completion`** — cairn provides `cairn:verdict-backed-verification`. Same pattern — enforces the same discipline with hash-verified evidence instead of agent-discipline-alone.
-- **Maybe wrap `superpowers:test-driven-development`** — only if a clean insertion point exists where emitting a verdict after RED-GREEN is natural. If it would require behavioral changes to TDD discipline, skip and revisit in Ship 4.
+- **Not wrapping `superpowers:test-driven-development` in Ship 3.** Ship 3 brainstorm decided no TDD wrap: the three-skills scope is tight enough, and TDD's RED-GREEN discipline is orthogonal to cairn's claim/verdict/complete cycle — wrapping would layer ceremony without substrate benefit. Revisit in Phase 2+ if a concrete use case surfaces (e.g., binding a verdict at RED to freeze the failing test as evidence). Deferred, not rejected.
+- **Ship 3 feature target REQ-002 locked:** `cairn spec validate` response envelope extension (`specs_scanned: {requirements, tasks}`) + new `cairn spec init` command that scaffolds annotated `.yaml.example` templates. Absorbs two items from `docs/superpowers/ship-3-polish-notes.md`. Renamed-template detection: `specs/*/REQ-001.yaml` containing the template marker comment fires validation error `kind: renamed_template`.
+- **Ship 3 bootstrap gap acknowledged:** the three Ship 3 skills themselves are implemented via unwrapped `superpowers:subagent-driven-development` (the wrap doesn't exist yet). Dogfood-via-cairn starts at REQ-002's four sub-tasks, after the wrap is usable. This is a build-order artifact.
+- **Provisional hash convention pinned:** `producer_hash = sha256("ship3:" + gate.id + ":" + gate.producer.kind)`; `inputs_hash = sha256("ship3:" + run_id)`. Placeholders only — explicitly NOT safe for cross-run drift detection. Replaced when Q1 of `docs/superpowers/ship-3-open-questions.md` resolves. Full banner + recipe in the `using-cairn` plugin's `hash-placeholders.md` spoke.
 - **Do not touch** `superpowers:brainstorming`, `superpowers:writing-plans`. Prose specs stay as Superpowers produces them; cairn YAML is authored separately as additive sidecar (per §"Spec-format posture").
 - **No cairn SessionStart hook** (Q6 decision). Reconcile is called explicitly (by skills or by the user running `cairn reconcile`). Avoids conflicting with Superpowers' existing SessionStart hook.
 - **Claude Code only** for Ship 3 skill support (Q7 decision). Cursor / Codex / Gemini / Copilot / OpenCode ports come after cairn proves out.
@@ -575,9 +578,9 @@ No pre-planned scope. The point is to surface real pain, not build more features
 1. User opens Claude Code with Superpowers + cairn installed, working in the cairn repo.
 2. User: "Let's implement REQ-002" (the Ship 2–chosen improvement to cairn).
 3. `superpowers:brainstorming` runs unmodified → prose spec at `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`. User approves.
-4. Agent (or user) hand-authors the cairn YAML sidecar: `specs/requirements/REQ-002.yaml` + 2–4 `specs/tasks/TASK-00N.yaml` files. `cairn spec validate` passes. `cairn task plan` materializes. (Automatic prose-to-YAML extraction is deferred past Ship 4.)
+4. **Ship 3 build-session bootstrap (a2):** REQ-002 YAML is hand-authored one time as the bootstrap, because the `using-cairn` skill doesn't exist yet. This hand-authoring is a build-order artifact, NOT a methodology claim. The "human never types YAML" success criterion applies to Ship 4+ sessions, where every fresh feature design flows through `superpowers:brainstorming` → `using-cairn` derivation → `superpowers:writing-plans` → `using-cairn` derivation → `cairn:subagent-driven-development-with-verdicts`. Ship 3 produces the skills that make this possible; Ship 4 is the first session where the criterion is actually testable end-to-end.
 5. `superpowers:writing-plans` runs unmodified → prose plan at `docs/superpowers/plans/YYYY-MM-DD-<feature>.md`.
-6. Agent invokes `cairn:subagent-driven-development-with-verdicts` instead of the Superpowers original. For each task:
+6. Agent invokes `cairn:subagent-driven-development-with-verdicts` instead of the Superpowers original. For each REQ-002 sub-task TASK-002-001..004 (hand-authored during Ship 3 bootstrap; auto-derived in Ship 4+):
    - `cairn memory search "<topic>"` for prior cross-session context.
    - `cairn task claim <id> --agent <sub> --ttl 30m`.
    - Subagent implements under TDD.
@@ -603,7 +606,7 @@ No pre-planned scope. The point is to surface real pain, not build more features
 | Ship 3 skill integration slips past week 3                | Acceptable. Ship 3 is the integration ship; slipping it does not block the substrate's existence.                                                                 |
 | Event-log completeness regresses                          | CI test in Ship 1 asserts coverage. Any new mutation PR must extend the assertion in the same PR.                                                                 |
 | Cairn skills diverge from Superpowers terminology         | `using-cairn` borrows Superpowers phrases verbatim ("your human partner", "Red Flags", "Iron Law"). Do not paraphrase.                                            |
-| YAML + prose divergence (sidecar posture)                 | Ship 3 `using-cairn` teaches the agent to write both. If they diverge, the prose is canonical for humans; the YAML is canonical for cairn. Ship 4 may automate.   |
+| YAML + prose divergence (sidecar posture)                 | Ship 3 `using-cairn` derives YAML from prose silently. Source-hash comment in YAML detects prose drift; regeneration is byte-identical. Prose is canonical end-to-end; YAML is a function of prose. Ship 4+ may revisit derivation rules if the C1 forcing test surfaces patterns. |
 | Ship 2 Ship-3-target selection is premature               | Defer the selection until the end of Ship 2, after 1–2 weeks of real substrate use. Do not commit in Ship 1.                                                      |
 
 ---
@@ -628,6 +631,8 @@ No pre-planned scope. The point is to surface real pain, not build more features
 7. Every CLI command outputs JSON by default. `--format human` only where it meaningfully helps.
 
 **Do not** start Ship 2 features (memory, reconcile) in Ship 1. **Do not** touch Superpowers skills in Ship 1 or Ship 2. Integration is explicitly Ship 3 territory and only for the narrowed skill list above.
+
+**Do not** treat Ship 3's hand-authored REQ-002 YAML as a contradiction of the "human never types YAML" criterion. Ship 3's build session is a bootstrap — skills don't exist yet. The criterion applies from Ship 4 onward, when the skills are present to enforce it.
 
 ---
 
