@@ -1,0 +1,10 @@
+{
+  "name": "cairn",
+  "version": "0.3.0",
+  "description": "Verification substrate for AI-coordinated software development. Ship 3 adds three skills that let Superpowers and cairn cooperate end-to-end.",
+  "skills": [
+    "skills/using-cairn",
+    "skills/subagent-driven-development-with-verdicts",
+    "skills/verdict-backed-verification"
+  ]
+}

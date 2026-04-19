@@ -1,0 +1,7 @@
+# cairn-derived: source-hash=0000000000000000000000000000000000000000000000000000000000000000 source-path=testdata/skill-tests/yaml-authoring/source-hash-drift/design.md derived-at=2026-04-19T00:00:00Z
+id: REQ-FX-004
+title: fixture source-hash-drift
+why: Source-hash field intentionally does NOT equal sha256(design.md). This file simulates "prose edited after derivation."
+scope_in: []
+scope_out: []
+gates: []

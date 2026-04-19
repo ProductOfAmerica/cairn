@@ -1,0 +1,1 @@
+The updated design introduces gate AC-001 without a producer command. Was this intentional? What command runs this gate?

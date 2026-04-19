@@ -1,0 +1,7 @@
+# cairn-derived: source-hash=ecbb9655a64efc24595d3c81985a3b1ec5092224cfd34f5470b2f5f82ed43fa7 source-path=testdata/skill-tests/yaml-authoring/source-hash-valid/design.md derived-at=2026-04-19T00:00:00Z
+id: REQ-FX-003
+title: fixture source-hash-valid
+why: Source-hash field must equal sha256(design.md).
+scope_in: []
+scope_out: []
+gates: []
