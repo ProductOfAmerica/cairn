@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/ProductOfAmerica/cairn/internal/cli"
 )
 
 // runCLIInDir runs the cairn binary from dir with the given args, using a
@@ -169,5 +171,50 @@ gates:
 	// All three loaded — counts attempts, not passes.
 	if scanned["requirements"] != float64(3) {
 		t.Errorf("requirements scanned: want 3, got %v", scanned["requirements"])
+	}
+}
+
+func TestSpecValidateRejectsRenamedExample(t *testing.T) {
+	root := t.TempDir()
+	specsRoot := filepath.Join(root, "specs")
+	// Init scaffolds .yaml.example.
+	if _, err := cli.SpecInit(specsRoot, false); err != nil {
+		t.Fatal(err)
+	}
+	// User mistake: rename the requirement template to .yaml.
+	src := filepath.Join(specsRoot, "requirements", "REQ-001.yaml.example")
+	dst := filepath.Join(specsRoot, "requirements", "REQ-001.yaml")
+	if err := os.Rename(src, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	home := t.TempDir()
+	cmd := exec.Command(cairnBinary, "spec", "validate", "--path", "specs")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "CAIRN_HOME="+home)
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+	_ = cmd.Run()
+	out := string(bytes.TrimSpace(outBuf.Bytes()))
+
+	env := parseEnvelope(t, out)
+	data := env["data"].(map[string]any)
+	errs := data["errors"].([]any)
+
+	found := false
+	for _, e := range errs {
+		em := e.(map[string]any)
+		if em["kind"] == "renamed_template" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want renamed_template error, got: %v", errs)
+	}
+
+	// Exit code MUST be 1 (validation error).
+	if cmd.ProcessState.ExitCode() != 1 {
+		t.Errorf("exit code: want 1, got %d", cmd.ProcessState.ExitCode())
 	}
 }
