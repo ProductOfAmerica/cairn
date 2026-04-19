@@ -58,6 +58,11 @@ func loadYAMLDir(dir string, parse func([]byte, string) (any, error)) ([]any, er
 	if err != nil {
 		return nil, err
 	}
+	// Ship 3 contract: only files with the literal `.yaml` suffix are loaded.
+	// `.yaml.example` files (written by `cairn spec init`) are reference-only
+	// scaffolds and MUST be skipped here. The strict-suffix match below
+	// satisfies that requirement; do not relax it without updating the
+	// renamed-template detector in validate.go.
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue

@@ -338,3 +338,41 @@ func TestStore_Materialize(t *testing.T) {
 		t.Fatalf("gate_def_hash bad: %s", hash)
 	}
 }
+
+func TestLoad_ScanCountsEmpty(t *testing.T) {
+	root := t.TempDir()
+	// no requirements/, no tasks/ subdirs at all
+	bundle, err := intent.Load(root)
+	if err != nil {
+		t.Fatalf("Load empty: %v", err)
+	}
+	if got := len(bundle.Requirements); got != 0 {
+		t.Errorf("requirements: want 0, got %d", got)
+	}
+	if got := len(bundle.Tasks); got != 0 {
+		t.Errorf("tasks: want 0, got %d", got)
+	}
+}
+
+func TestLoad_ScanCountsIgnoresExamples(t *testing.T) {
+	root := t.TempDir()
+	reqDir := filepath.Join(root, "requirements")
+	taskDir := filepath.Join(root, "tasks")
+	_ = os.MkdirAll(reqDir, 0o755)
+	_ = os.MkdirAll(taskDir, 0o755)
+
+	// Only .yaml.example files. Loader must skip them.
+	_ = os.WriteFile(filepath.Join(reqDir, "REQ-001.yaml.example"), []byte("id: REQ-001\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(taskDir, "TASK-001.yaml.example"), []byte("id: TASK-001\n"), 0o644)
+
+	bundle, err := intent.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := len(bundle.Requirements); got != 0 {
+		t.Errorf("requirements: want 0 (only .yaml.example present), got %d", got)
+	}
+	if got := len(bundle.Tasks); got != 0 {
+		t.Errorf("tasks: want 0 (only .yaml.example present), got %d", got)
+	}
+}
