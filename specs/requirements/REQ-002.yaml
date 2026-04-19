@@ -1,0 +1,28 @@
+id: REQ-002
+title: cairn spec validate envelope + cairn spec init scaffold
+why: First-run users have no way to discover the spec YAML shape, and `cairn spec validate` returns ambiguous `{errors:[]}` on an empty tree. Ship 3 closes both papercuts and adds a defensive renamed-template check so users who copy a scaffold to the canonical name get a clear error instead of silent acceptance.
+scope_in:
+  - internal/intent/**
+  - internal/cli/spec_init*.go
+  - cmd/cairn/spec.go
+scope_out:
+  - internal/db/**
+  - internal/events/**
+  - internal/task/**
+  - internal/verdict/**
+  - internal/memory/**
+  - internal/reconcile/**
+gates:
+  - id: AC-002-TEST
+    kind: test
+    producer:
+      kind: executable
+      config:
+        command: [go, test, ./internal/intent/..., ./internal/cli/..., ./internal/integration/...]
+        pass_on_exit_code: 0
+  - id: AC-002-RUBRIC
+    kind: rubric
+    producer:
+      kind: human
+      config:
+        reviewer_role: documentation_quality

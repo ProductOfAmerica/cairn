@@ -1,0 +1,7 @@
+{
+  "name": "cairn",
+  "displayName": "cairn",
+  "description": "Standalone verification substrate. Pair with obra/superpowers for end-to-end methodology + verification.",
+  "homepage": "https://github.com/ProductOfAmerica/cairn",
+  "license": "MIT"
+}
