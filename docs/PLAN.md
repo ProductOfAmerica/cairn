@@ -94,6 +94,8 @@ Seven layers. Each has one canonical substrate.
 
 `<state-root>/<repo-id>/blobs/<sha[:2]>/<sha>`. Two hex chars → 256 subdirs, bounded fanout on large repos. Content-addressed; dedupe on insert.
 
+**Single-writer-per-blob invariant.** Each evidence blob is keyed by its sha256 and written by exactly one `cairn evidence put` invocation. Two processes attempting to write the same sha simultaneously is a usage error — the second writer will see `blob_collision` even when the contents are identical, due to the unavoidable TOCTOU window in `WriteAtomicStream` between Stat, Open, and Rename. This is acceptable because the caller can simply re-invoke `evidence put` after backoff; idempotency at the evidence-row level is provided by the `ON CONFLICT(sha256) DO NOTHING` constraint in `Put`.
+
 ---
 
 ## Core invariants (non-negotiable)
@@ -458,6 +460,8 @@ cairn events since 0 | jq -r '.kind' | sort -u
 ```
 
 covers every event kind in the table above that applies to the exercised surface. This test lives in Ship 1, not Ship 2 or later. Any new mutation added in later ships adds a new event kind + extends this assertion in the same PR.
+
+**Exception: `evidence.Verify` hash-mismatch event.** `evidence.Verify` emits `evidence_invalidated` on hash mismatch as best-effort — the returned `evidence_hash_mismatch` substrate error is the primary signal. If the event insert fails, the substrate error still surfaces, but the event log may not record the invalidation event for that verification attempt.
 
 ---
 

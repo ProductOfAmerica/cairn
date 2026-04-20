@@ -35,7 +35,13 @@ func (s *Store) Claim(in ClaimInput) (ClaimResult, error) {
 	}
 	if hit {
 		var r ClaimResult
-		_ = json.Unmarshal(cached, &r)
+		if err := json.Unmarshal(cached, &r); err != nil {
+			return ClaimResult{}, cairnerr.New(cairnerr.CodeSubstrate,
+				"op_log_cache_corrupted",
+				fmt.Sprintf("op_log entry for op_id %q has unreadable result_json", in.OpID)).
+				WithDetails(map[string]any{"op_id": in.OpID, "kind": "task.claim"}).
+				WithCause(err)
+		}
 		return r, nil
 	}
 
@@ -137,7 +143,10 @@ func (s *Store) expireStaleLeases(now int64) error {
 	var ex []expiring
 	for rows.Next() {
 		var e expiring
-		_ = rows.Scan(&e.claimID, &e.taskID)
+		if err := rows.Scan(&e.claimID, &e.taskID); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan expiring claim: %w", err)
+		}
 		ex = append(ex, e)
 	}
 	rows.Close()
@@ -157,13 +166,17 @@ func (s *Store) expireStaleLeases(now int64) error {
 		}
 		// If no other live claims, revert the task.
 		var liveCount int
-		_ = s.tx.QueryRow(
+		if err := s.tx.QueryRow(
 			`SELECT count(*) FROM claims WHERE task_id=? AND released_at IS NULL`,
 			e.taskID,
-		).Scan(&liveCount)
+		).Scan(&liveCount); err != nil {
+			return fmt.Errorf("scan live claim count for task %s: %w", e.taskID, err)
+		}
 		if liveCount == 0 {
 			var prev string
-			_ = s.tx.QueryRow(`SELECT status FROM tasks WHERE id=?`, e.taskID).Scan(&prev)
+			if err := s.tx.QueryRow(`SELECT status FROM tasks WHERE id=?`, e.taskID).Scan(&prev); err != nil {
+				return fmt.Errorf("scan task status for %s: %w", e.taskID, err)
+			}
 			if prev == "claimed" || prev == "in_progress" || prev == "gate_pending" {
 				if _, err := s.tx.Exec(
 					`UPDATE tasks SET status='open', updated_at=? WHERE id=?`,
@@ -198,7 +211,12 @@ func (s *Store) checkDepsDone(taskID string) error {
 		return err
 	}
 	var deps []string
-	_ = json.Unmarshal([]byte(depsJSON), &deps)
+	if err := json.Unmarshal([]byte(depsJSON), &deps); err != nil {
+		return cairnerr.New(cairnerr.CodeSubstrate, "depends_on_corrupted",
+			fmt.Sprintf("task %q depends_on_json is not valid JSON", taskID)).
+			WithDetails(map[string]any{"task_id": taskID}).
+			WithCause(err)
+	}
 	if len(deps) == 0 {
 		return nil
 	}
@@ -223,7 +241,9 @@ func (s *Store) checkDepsDone(taskID string) error {
 	var blocking []map[string]any
 	for rows.Next() {
 		var id, status string
-		_ = rows.Scan(&id, &status)
+		if err := rows.Scan(&id, &status); err != nil {
+			return fmt.Errorf("scan blocking dep: %w", err)
+		}
 		blocking = append(blocking, map[string]any{"id": id, "status": status})
 	}
 	if len(blocking) > 0 {

@@ -35,7 +35,13 @@ func (s *Store) Complete(in CompleteInput) (CompleteResult, error) {
 	}
 	if hit {
 		var r CompleteResult
-		_ = json.Unmarshal(cached, &r)
+		if err := json.Unmarshal(cached, &r); err != nil {
+			return CompleteResult{}, cairnerr.New(cairnerr.CodeSubstrate,
+				"op_log_cache_corrupted",
+				fmt.Sprintf("op_log entry for op_id %q has unreadable result_json", in.OpID)).
+				WithDetails(map[string]any{"op_id": in.OpID, "kind": "task.complete"}).
+				WithCause(err)
+		}
 		return r, nil
 	}
 
@@ -65,7 +71,13 @@ func (s *Store) Complete(in CompleteInput) (CompleteResult, error) {
 		return CompleteResult{}, err
 	}
 	var requiredGates []string
-	_ = json.Unmarshal([]byte(reqJSON), &requiredGates)
+	if err := json.Unmarshal([]byte(reqJSON), &requiredGates); err != nil {
+		return CompleteResult{}, cairnerr.New(cairnerr.CodeSubstrate,
+			"required_gates_corrupted",
+			fmt.Sprintf("task %q required_gates_json is not valid JSON", taskID)).
+			WithDetails(map[string]any{"task_id": taskID}).
+			WithCause(err)
+	}
 
 	// Check each gate's latest verdict using a same-txn sub-Store.
 	vStore := verdict.NewStore(s.tx, s.events, ids.NewGenerator(s.clock),

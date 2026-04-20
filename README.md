@@ -219,6 +219,18 @@ Seven layers, each with one canonical substrate:
 
 ---
 
+## Trust model
+
+cairn is a single-host single-user CLI. The trust boundary is the user's machine — there is no authentication layer because none is needed at this boundary. A few design properties follow from this:
+
+- **Agents are identified by caller-supplied `--agent <id>`.** No cryptographic verification. Heartbeat and release operate on `claim_id` only — any caller with the claim ID can renew or release.
+- **`--op-id` is caller-supplied.** Format-validated as a ULID (`internal/ids/opid.go ValidateOpID`); not bound to caller identity. Idempotent replay assumes caller honesty.
+- **State is shared by all worktrees of a repo** via the FS at `<state-root>/<repo-id>/state.db`. Anyone with FS access can read or modify state. Mitigated by content-addressed evidence + verdict hash binding + reconciliation invalidating stale verdicts.
+
+If you need multi-tenant access control, run cairn behind a process that enforces it (HTTP/RPC wrapper, OS-level user separation, etc.). cairn itself does not.
+
+---
+
 ## Core invariants (the things you can rely on)
 
 1. **Every mutation goes through the cairn CLI.** No agent writes SQL.

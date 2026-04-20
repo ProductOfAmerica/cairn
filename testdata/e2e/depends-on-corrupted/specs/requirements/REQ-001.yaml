@@ -1,0 +1,10 @@
+id: REQ-001
+title: depends-on-corrupted scenario
+gates:
+  - id: AC-001
+    kind: test
+    producer:
+      kind: executable
+      config:
+        command: [echo, ok]
+        pass_on_exit_code: 0

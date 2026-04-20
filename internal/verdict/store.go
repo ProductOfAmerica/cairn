@@ -19,6 +19,10 @@ import (
 // hashPattern matches a lowercase 64-char hex string (SHA-256).
 var hashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// defaultHistoryLimit is the page size returned by Store.History when no
+// explicit limit is provided.
+const defaultHistoryLimit = 50
+
 // validStatuses is the set of allowed verdict status values.
 var validStatuses = map[string]bool{
 	"pass":         true,
@@ -225,7 +229,7 @@ func (s *Store) Latest(gateID string) (LatestResult, error) {
 			fmt.Sprintf("gate %q", gateID))
 	}
 	if err != nil {
-		return LatestResult{}, err
+		return LatestResult{}, fmt.Errorf("query current gate hash for %s: %w", gateID, err)
 	}
 
 	var v Verdict
@@ -245,7 +249,7 @@ func (s *Store) Latest(gateID string) (LatestResult, error) {
 		return LatestResult{Verdict: nil, Fresh: false}, nil
 	}
 	if err != nil {
-		return LatestResult{}, err
+		return LatestResult{}, fmt.Errorf("query latest verdict for gate %s: %w", gateID, err)
 	}
 	if score.Valid {
 		v.ScoreJSON = score.String
@@ -262,7 +266,7 @@ func (s *Store) Latest(gateID string) (LatestResult, error) {
 // its derived freshness.
 func (s *Store) History(gateID string, limit int) ([]VerdictWithFresh, error) {
 	if limit <= 0 {
-		limit = 50
+		limit = defaultHistoryLimit
 	}
 	var curGateHash string
 	err := s.tx.QueryRow(
@@ -273,7 +277,7 @@ func (s *Store) History(gateID string, limit int) ([]VerdictWithFresh, error) {
 			fmt.Sprintf("gate %q", gateID))
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query current gate hash for %s: %w", gateID, err)
 	}
 
 	rows, err := s.tx.Query(
@@ -286,7 +290,7 @@ func (s *Store) History(gateID string, limit int) ([]VerdictWithFresh, error) {
 		gateID, limit,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query verdict history for gate %s: %w", gateID, err)
 	}
 	defer rows.Close()
 
@@ -297,7 +301,7 @@ func (s *Store) History(gateID string, limit int) ([]VerdictWithFresh, error) {
 		var invalidated sql.NullInt64
 		if err := rows.Scan(&v.ID, &v.RunID, &v.GateID, &v.Status, &score, &v.ProducerHash,
 			&v.GateDefHash, &v.InputsHash, &evID, &v.BoundAt, &v.Sequence, &invalidated); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan verdict row: %w", err)
 		}
 		if score.Valid {
 			v.ScoreJSON = score.String

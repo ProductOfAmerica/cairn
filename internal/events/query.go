@@ -6,11 +6,15 @@ import (
 	"fmt"
 )
 
+// defaultEventsBatch is the page size returned by Since when no explicit
+// limit is provided.
+const defaultEventsBatch = 100
+
 // Since returns events with `at > sinceMilli`, ordered by id ascending.
 // Default limit of 100 applies when limit <= 0.
 func Since(sqlDB *sql.DB, sinceMilli int64, limit int) ([]Event, error) {
 	if limit <= 0 {
-		limit = 100
+		limit = defaultEventsBatch
 	}
 	rows, err := sqlDB.Query(
 		`SELECT id, at, kind, entity_kind, entity_id, payload_json, op_id

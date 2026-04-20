@@ -3,9 +3,11 @@ package task_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 
+	"github.com/ProductOfAmerica/cairn/internal/cairnerr"
 	"github.com/ProductOfAmerica/cairn/internal/clock"
 	"github.com/ProductOfAmerica/cairn/internal/db"
 	"github.com/ProductOfAmerica/cairn/internal/events"
@@ -359,5 +361,171 @@ func TestComplete_GatesNotFreshPassConflict(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("complete with no verdicts should conflict")
+	}
+}
+
+func TestComplete_RequiredGatesCorrupted(t *testing.T) {
+	t.Parallel()
+	h := openDB(t)
+
+	now := int64(1_700_000_000_000)
+	clk := clock.NewFake(now)
+	gen := ids.NewGenerator(clk)
+	app := events.NewAppender(clk)
+
+	// Seed a task whose required_gates_json is invalid JSON.
+	err := h.WithTx(context.Background(), func(tx *db.Tx) error {
+		if _, err := tx.Exec(
+			`INSERT INTO requirements (id, spec_path, spec_hash, created_at, updated_at)
+			 VALUES ('REQ-1','specs/r.yaml','h',?,?)`, now, now); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO tasks (id, requirement_id, spec_path, spec_hash,
+			    depends_on_json, required_gates_json, status, created_at, updated_at)
+			 VALUES ('TASK-1','REQ-1','specs/t.yaml','h','[]','{not valid json','open',?,?)`,
+			now, now); err != nil {
+			return err
+		}
+		// Hand-craft a claim row to point at TASK-1.
+		if _, err := tx.Exec(
+			`INSERT INTO claims (id, task_id, agent_id, acquired_at, expires_at, op_id)
+			 VALUES ('CLAIM-1','TASK-1','agent',?,?,'OP-CLAIM')`,
+			now, now+1000); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO runs (id, task_id, claim_id, started_at) VALUES ('RUN-1','TASK-1','CLAIM-1',?)`,
+			now); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	err = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, app, gen, clk)
+		_, err := store.Complete(task.CompleteInput{OpID: "OP-COMPLETE", ClaimID: "CLAIM-1"})
+		return err
+	})
+	var ce *cairnerr.Err
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *cairnerr.Err, got %T: %v", err, err)
+	}
+	if ce.Kind != "required_gates_corrupted" {
+		t.Fatalf("expected kind required_gates_corrupted, got %q", ce.Kind)
+	}
+	if ce.Code != cairnerr.CodeSubstrate {
+		t.Fatalf("expected CodeSubstrate, got %q", ce.Code)
+	}
+	if got, _ := ce.Details["task_id"].(string); got != "TASK-1" {
+		t.Fatalf("expected details.task_id=TASK-1, got %q", got)
+	}
+	if ce.Cause == nil {
+		t.Fatalf("expected wrapped json error cause, got nil")
+	}
+}
+
+func TestOpLog_CorruptedCacheRefuses(t *testing.T) {
+	t.Parallel()
+	h := openDB(t)
+
+	now := int64(1_700_000_000_000)
+	clk := clock.NewFake(now)
+	gen := ids.NewGenerator(clk)
+	app := events.NewAppender(clk)
+
+	// Seed an op_log row with malformed result_json under kind=task.claim.
+	err := h.WithTx(context.Background(), func(tx *db.Tx) error {
+		_, err := tx.Exec(
+			`INSERT INTO op_log (op_id, kind, first_seen_at, result_json)
+			 VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAV','task.claim',?,'{not json')`, now)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	err = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, app, gen, clk)
+		_, err := store.Claim(task.ClaimInput{
+			OpID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+			TaskID:  "TASK-1",
+			AgentID: "agent",
+			TTLMs:   1000,
+		})
+		return err
+	})
+	var ce *cairnerr.Err
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *cairnerr.Err, got %T: %v", err, err)
+	}
+	if ce.Kind != "op_log_cache_corrupted" {
+		t.Fatalf("expected kind op_log_cache_corrupted, got %q", ce.Kind)
+	}
+	if ce.Code != cairnerr.CodeSubstrate {
+		t.Fatalf("expected CodeSubstrate, got %q", ce.Code)
+	}
+	if got, _ := ce.Details["op_id"].(string); got != "01ARZ3NDEKTSV4RRFFQ69G5FAV" {
+		t.Fatalf("expected details.op_id, got %q", got)
+	}
+	if got, _ := ce.Details["kind"].(string); got != "task.claim" {
+		t.Fatalf("expected details.kind=task.claim, got %q", got)
+	}
+	if ce.Cause == nil {
+		t.Fatalf("expected wrapped json error cause, got nil")
+	}
+}
+
+func TestClaim_DependsOnCorrupted(t *testing.T) {
+	t.Parallel()
+	h := openDB(t)
+
+	now := int64(1_700_000_000_000)
+	clk := clock.NewFake(now)
+	gen := ids.NewGenerator(clk)
+	app := events.NewAppender(clk)
+
+	err := h.WithTx(context.Background(), func(tx *db.Tx) error {
+		if _, err := tx.Exec(
+			`INSERT INTO requirements (id, spec_path, spec_hash, created_at, updated_at)
+			 VALUES ('REQ-1','specs/r.yaml','h',?,?)`, now, now); err != nil {
+			return err
+		}
+		_, err := tx.Exec(
+			`INSERT INTO tasks (id, requirement_id, spec_path, spec_hash,
+			    depends_on_json, required_gates_json, status, created_at, updated_at)
+			 VALUES ('TASK-1','REQ-1','specs/t.yaml','h','{garbage','[]','open',?,?)`,
+			now, now)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	err = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := task.NewStore(tx, app, gen, clk)
+		_, err := store.Claim(task.ClaimInput{
+			OpID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", TaskID: "TASK-1", AgentID: "agent", TTLMs: 1000,
+		})
+		return err
+	})
+	var ce *cairnerr.Err
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *cairnerr.Err, got %T: %v", err, err)
+	}
+	if ce.Kind != "depends_on_corrupted" {
+		t.Fatalf("expected kind depends_on_corrupted, got %q", ce.Kind)
+	}
+	if ce.Code != cairnerr.CodeSubstrate {
+		t.Fatalf("expected CodeSubstrate, got %q", ce.Code)
+	}
+	if got, _ := ce.Details["task_id"].(string); got != "TASK-1" {
+		t.Fatalf("expected details.task_id=TASK-1, got %q", got)
+	}
+	if ce.Cause == nil {
+		t.Fatalf("expected wrapped json error cause, got nil")
 	}
 }

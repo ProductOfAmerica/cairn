@@ -25,6 +25,8 @@ func (s *Store) Release(in ReleaseInput) error {
 
 	var taskID string
 	var released sql.NullInt64
+	// Release does not verify that the caller holds the original claim.
+	// See README.md "Trust model" — single-host trust assumption.
 	err := s.tx.QueryRow(
 		`SELECT task_id, released_at FROM claims WHERE id=?`, in.ClaimID,
 	).Scan(&taskID, &released)

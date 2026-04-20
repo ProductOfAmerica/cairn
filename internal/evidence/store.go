@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/ProductOfAmerica/cairn/internal/cairnerr"
@@ -60,23 +61,55 @@ func (s *Store) Put(opID, path, contentType string) (PutResult, error) {
 		contentType = "application/octet-stream"
 	}
 
-	data, err := os.ReadFile(path)
+	// Pass 1: stream-hash to compute sha + byteCount + blobPath. We can't
+	// pick the blob path until we know the sha (BlobPath shards by sha[:2]),
+	// so two passes over the source file are unavoidable. The first pass
+	// only allocates a few KB of sha256 state.
+	src, err := os.Open(path)
 	if err != nil {
-		return PutResult{}, fmt.Errorf("read file %q: %w", path, err)
+		return PutResult{}, fmt.Errorf("open file %q: %w", path, err)
 	}
-
-	sum := sha256.Sum256(data)
-	sha := hex.EncodeToString(sum[:])
+	hasher := sha256.New()
+	byteCount, copyErr := io.Copy(hasher, src)
+	closeErr := src.Close()
+	if copyErr != nil {
+		return PutResult{}, fmt.Errorf("hash file %q: %w", path, copyErr)
+	}
+	if closeErr != nil {
+		return PutResult{}, fmt.Errorf("close file %q: %w", path, closeErr)
+	}
+	sha := hex.EncodeToString(hasher.Sum(nil))
 	blobPath := BlobPath(s.blobRoot, sha)
 
-	_, err = WriteAtomic(blobPath, data)
+	// Pass 2: stream-write to the dedupe/atomic blob path. WriteAtomicStream
+	// returns the sha256 it observed during the copy; we cross-check it
+	// against pass 1's sha so that if the user's source file mutated
+	// between passes we refuse the write with source_mutated rather than
+	// silently storing different bytes at a path derived from pass 1's sha.
+	src2, err := os.Open(path)
 	if err != nil {
-		return PutResult{}, fmt.Errorf("write blob: %w", err)
+		return PutResult{}, fmt.Errorf("open file %q: %w", path, err)
+	}
+	n, sum, werr := WriteAtomicStream(blobPath, src2)
+	closeErr2 := src2.Close()
+	if werr != nil {
+		return PutResult{}, fmt.Errorf("write blob: %w", werr)
+	}
+	if closeErr2 != nil {
+		return PutResult{}, fmt.Errorf("close file %q: %w", path, closeErr2)
+	}
+	if mutErr := crossCheckPutShas(path, sha, sum, byteCount, n); mutErr != nil {
+		// TOCTOU: source file changed between pass 1 (hash) and pass 2
+		// (write). The bytes on disk now hash to a different sha than the
+		// path derived from pass 1's sha. Refuse the write.
+		// TODO: integration test for source_mutated requires a deterministic
+		// mid-write mutation harness that does not currently exist; the
+		// substrate error shape is exercised by unit tests in this package.
+		return PutResult{}, mutErr
 	}
 
 	// URI is the blob path absolute on the host.
 	uri := blobPath
-	byteCount := int64(len(data))
 
 	// Check for existing evidence row (dedupe).
 	var existingID string
@@ -177,18 +210,25 @@ func (s *Store) Verify(sha string) error {
 			})
 	}
 
-	data, err := os.ReadFile(uri)
+	f, err := os.Open(uri)
 	if err != nil {
-		return fmt.Errorf("read blob %q: %w", uri, err)
+		return fmt.Errorf("open blob %q: %w", uri, err)
 	}
-
-	sum := sha256.Sum256(data)
-	got := hex.EncodeToString(sum[:])
+	defer f.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, f); err != nil {
+		return fmt.Errorf("hash blob %q: %w", uri, err)
+	}
+	got := hex.EncodeToString(hasher.Sum(nil))
 	if got == sha {
 		return nil
 	}
 
 	// Corruption detected — emit event then return error.
+	// Best-effort event emission: the substrate error returned below is
+	// what callers act on. If the events table insert fails here, we still
+	// surface the hash mismatch — the corruption fact is what matters.
+	// Invariant 10 carries an explicit exception for this site (see docs/PLAN.md).
 	_ = s.events.Append(s.tx, events.Record{
 		Kind:       "evidence_invalidated",
 		EntityKind: "evidence",
@@ -200,6 +240,31 @@ func (s *Store) Verify(sha string) error {
 	})
 	return cairnerr.New(cairnerr.CodeSubstrate, "evidence_hash_mismatch",
 		fmt.Sprintf("blob sha256 mismatch: expected %s got %s", sha, got))
+}
+
+// crossCheckPutShas compares the sha computed in Put's pass-1 (used to
+// derive blobPath and stored on the evidence row) against the sha returned
+// by WriteAtomicStream during pass-2. Returns nil if they match. On
+// mismatch returns a CodeSubstrate "source_mutated" error whose Details
+// carry both shas and both byte counts so operators can diagnose the race.
+//
+// Factored out of Put for direct unit testing — racing the file system to
+// reproduce a real TOCTOU mid-write is not portable across platforms, so
+// the helper boundary is the deterministic test seam.
+func crossCheckPutShas(path, pass1Sha string, pass2Sum [sha256.Size]byte, pass1Bytes, pass2Bytes int64) error {
+	pass2Sha := hex.EncodeToString(pass2Sum[:])
+	if pass2Sha == pass1Sha {
+		return nil
+	}
+	return cairnerr.New(cairnerr.CodeSubstrate, "source_mutated",
+		fmt.Sprintf("source file %q mutated between hash and write passes", path)).
+		WithDetails(map[string]any{
+			"path":        path,
+			"pass1_sha":   pass1Sha,
+			"pass2_sha":   pass2Sha,
+			"pass1_bytes": pass1Bytes,
+			"pass2_bytes": pass2Bytes,
+		})
 }
 
 // Get returns the evidence row for the given sha256.

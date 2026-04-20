@@ -14,6 +14,11 @@ import (
 	"github.com/ProductOfAmerica/cairn/internal/ids"
 )
 
+// defaultListLimit is the page size returned by Store.List when the caller
+// leaves Limit at zero-value. The CLI translates --limit 0 to math.MaxInt32
+// before calling List.
+const defaultListLimit = 10
+
 // Store owns the memory_entries + memory_fts tables.
 type Store struct {
 	tx     *db.Tx
@@ -234,7 +239,7 @@ func (s *Store) List(in ListInput) (ListResult, error) {
 	if in.Limit > 0 || (in.Limit == 0 && !isExplicitUnlimited(in)) {
 		effective := in.Limit
 		if effective == 0 {
-			effective = 10 // default when caller left Limit at zero-value
+			effective = defaultListLimit // default when caller left Limit at zero-value
 		}
 		querySQL += " LIMIT ?"
 		queryArgs = append(queryArgs, effective)

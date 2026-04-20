@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/ProductOfAmerica/cairn/internal/clock"
@@ -95,8 +96,12 @@ func Rule3ApplyEvidenceInvalidations(
 // missing or still hash-mismatched vs expected. Returns ("", false, nil) if
 // the blob is present AND matches — probe was stale. Returns ("", false, err)
 // if an I/O error prevents re-stat from deciding — caller must abort.
+//
+// Uses context.Background(): re-stat happens inside the mutation tx where
+// candidates are already pre-filtered/small; cancellable hashing matters in
+// the probe phase (RunEvidenceProbe), not here.
 func reStatInvalid(uri, expected string) (string, bool, error) {
-	r, ok, err := checkBlob(uri, expected)
+	r, ok, err := checkBlob(context.Background(), uri, expected)
 	if err != nil {
 		return "", false, err
 	}

@@ -29,12 +29,20 @@ func (s *Store) Heartbeat(in HeartbeatInput) (HeartbeatResult, error) {
 	}
 	if hit {
 		var r HeartbeatResult
-		_ = json.Unmarshal(cached, &r)
+		if err := json.Unmarshal(cached, &r); err != nil {
+			return HeartbeatResult{}, cairnerr.New(cairnerr.CodeSubstrate,
+				"op_log_cache_corrupted",
+				fmt.Sprintf("op_log entry for op_id %q has unreadable result_json", in.OpID)).
+				WithDetails(map[string]any{"op_id": in.OpID, "kind": "task.heartbeat"}).
+				WithCause(err)
+		}
 		return r, nil
 	}
 
 	var acquired, oldExpires int64
 	var released sql.NullInt64
+	// Heartbeat does not verify that the caller holds the original claim.
+	// See README.md "Trust model" — single-host trust assumption.
 	err = s.tx.QueryRow(
 		`SELECT acquired_at, expires_at, released_at FROM claims WHERE id=?`,
 		in.ClaimID,

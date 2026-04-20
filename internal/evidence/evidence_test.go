@@ -1,12 +1,15 @@
 package evidence_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -412,6 +415,178 @@ func TestVerify_RejectsInvalidatedRow(t *testing.T) {
 	}
 	if ce.Code != cairnerr.CodeValidation {
 		t.Errorf("code = %q, want validation", ce.Code)
+	}
+}
+
+func TestVerify_LargeBlobStreamsHash(t *testing.T) {
+	t.Parallel()
+	h := openDB(t)
+
+	dir := t.TempDir()
+	blobPath := filepath.Join(dir, "blob.bin")
+	const size = 64 * 1024 * 1024 // 64 MiB sparse file
+
+	f, err := os.Create(blobPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	// Compute expected sha by streaming (mirrors the desired Verify implementation).
+	hf, err := os.Open(blobPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, hf); err != nil {
+		t.Fatal(err)
+	}
+	hf.Close()
+	expectedSha := hex.EncodeToString(hasher.Sum(nil))
+
+	clk := clock.NewFake(int64(1_700_000_000_000))
+	gen := ids.NewGenerator(clk)
+	app := events.NewAppender(clk)
+
+	err = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		_, err := tx.Exec(
+			`INSERT INTO evidence (id, sha256, uri, bytes, content_type, created_at)
+			 VALUES (?, ?, ?, ?, 'application/octet-stream', ?)`,
+			gen.ULID(), expectedSha, blobPath, int64(size), clk.NowMilli())
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var beforeStats, afterStats runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&beforeStats)
+
+	err = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := evidence.NewStore(tx, app, gen, "", clk)
+		return store.Verify(expectedSha)
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+
+	runtime.ReadMemStats(&afterStats)
+	delta := afterStats.TotalAlloc - beforeStats.TotalAlloc
+	// Streaming sha256 allocates a few KB of state, not 64 MiB.
+	if delta > 4*1024*1024 {
+		t.Fatalf("Verify allocated %d bytes for a %d-byte sparse file — not streaming", delta, size)
+	}
+}
+
+func TestWriteAtomic_DifferentSizeReturnsCollisionWithoutHashing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "blob")
+
+	// Pre-populate dst with 100 bytes of 'A'.
+	if err := os.WriteFile(dst, bytes.Repeat([]byte{'A'}, 100), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a 200-byte different-size payload.
+	src := bytes.Repeat([]byte{'B'}, 200)
+	_, err := evidence.WriteAtomic(dst, src)
+	var ce *cairnerr.Err
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *cairnerr.Err, got %T: %v", err, err)
+	}
+	if ce.Kind != "blob_collision" {
+		t.Fatalf("expected kind blob_collision, got %q", ce.Kind)
+	}
+	// Size-mismatch path emits a distinct details map (sizes, no shas).
+	if got, _ := ce.Details["existing_size"].(int64); got != 100 {
+		t.Fatalf("expected existing_size=100, got %v", ce.Details["existing_size"])
+	}
+	if got, _ := ce.Details["new_size"].(int64); got != 200 {
+		t.Fatalf("expected new_size=200, got %v", ce.Details["new_size"])
+	}
+	// Size-only path must NOT have hashed (no sha details).
+	if _, ok := ce.Details["existing_sha"]; ok {
+		t.Fatalf("size-mismatch path must not include existing_sha, got %v", ce.Details)
+	}
+	if _, ok := ce.Details["new_sha"]; ok {
+		t.Fatalf("size-mismatch path must not include new_sha, got %v", ce.Details)
+	}
+}
+
+func TestWriteAtomic_SameSizeDifferentContentStreamHashesCollision(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "blob")
+
+	if err := os.WriteFile(dst, bytes.Repeat([]byte{'A'}, 100), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same size, different content — must trip the hash-mismatch branch.
+	src := bytes.Repeat([]byte{'B'}, 100)
+	_, err := evidence.WriteAtomic(dst, src)
+	var ce *cairnerr.Err
+	if !errors.As(err, &ce) || ce.Kind != "blob_collision" {
+		t.Fatalf("expected blob_collision, got %v", err)
+	}
+	if _, ok := ce.Details["existing_sha"]; !ok {
+		t.Fatalf("same-size collision must include existing_sha in details, got %v", ce.Details)
+	}
+	if _, ok := ce.Details["new_sha"]; !ok {
+		t.Fatalf("same-size collision must include new_sha in details, got %v", ce.Details)
+	}
+}
+
+func TestPut_StreamsLargeFile(t *testing.T) {
+	t.Parallel()
+	h := openDB(t)
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.bin")
+	const size = 64 * 1024 * 1024 // 64 MiB sparse
+
+	f, err := os.Create(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	clk := clock.NewFake(int64(1_700_000_000_000))
+	gen := ids.NewGenerator(clk)
+	app := events.NewAppender(clk)
+	blobRoot := t.TempDir()
+
+	var beforeStats, afterStats runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&beforeStats)
+
+	var res evidence.PutResult
+	err = h.WithTx(context.Background(), func(tx *db.Tx) error {
+		store := evidence.NewStore(tx, app, gen, blobRoot, clk)
+		var perr error
+		res, perr = store.Put("01ARZ3NDEKTSV4RRFFQ69G5FAV", src, "")
+		return perr
+	})
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	runtime.ReadMemStats(&afterStats)
+	delta := afterStats.TotalAlloc - beforeStats.TotalAlloc
+	// Streaming hash + streaming write allocates a few KB of state, not 64 MiB.
+	if delta > 4*1024*1024 {
+		t.Fatalf("Put allocated %d bytes for a %d-byte sparse file — not streaming", delta, size)
+	}
+	if res.Bytes != size {
+		t.Fatalf("byte count: got %d want %d", res.Bytes, size)
 	}
 }
 

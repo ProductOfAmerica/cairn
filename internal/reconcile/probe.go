@@ -98,7 +98,7 @@ func RunEvidenceProbe(ctx context.Context, h *db.DB, opts ProbeOpts) ([]Evidence
 		if err := rows.Scan(&c.EvidenceID, &c.Sha256, &c.URI); err != nil {
 			return nil, err
 		}
-		reason, ok, err := checkBlob(c.URI, c.Sha256)
+		reason, ok, err := checkBlob(ctx, c.URI, c.Sha256)
 		if err != nil {
 			return nil, err
 		}
@@ -119,7 +119,11 @@ func RunEvidenceProbe(ctx context.Context, h *db.DB, opts ProbeOpts) ([]Evidence
 // absent. Returns ("", false, err) on any other I/O error (permissions, FD
 // exhaustion, read failure mid-stream) — the caller must abort rather than
 // invalidate otherwise-good evidence on a transient OS condition.
-func checkBlob(uri, expected string) (string, bool, error) {
+//
+// ctx is consulted per Read via ctxReader so that hashing a multi-GB blob
+// can be interrupted (e.g. Ctrl-C) without waiting for the full Copy to
+// complete; on cancellation the wrapped error chain contains ctx.Err().
+func checkBlob(ctx context.Context, uri, expected string) (string, bool, error) {
 	f, err := os.Open(uri)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -130,7 +134,7 @@ func checkBlob(uri, expected string) (string, bool, error) {
 	defer f.Close()
 
 	hasher := sha256.New()
-	if _, err := io.Copy(hasher, f); err != nil {
+	if _, err := io.Copy(hasher, ctxReader{ctx: ctx, r: f}); err != nil {
 		return "", false, fmt.Errorf("hash blob %q: %w", uri, err)
 	}
 	got := hex.EncodeToString(hasher.Sum(nil))
@@ -138,4 +142,19 @@ func checkBlob(uri, expected string) (string, bool, error) {
 		return "", true, nil
 	}
 	return "hash_mismatch", false, nil
+}
+
+// ctxReader wraps an io.Reader to make io.Copy cancellable. Each Read checks
+// ctx.Done() before delegating; this lets a long sha-hash of a multi-GB blob
+// be interrupted by Ctrl-C without waiting for the full Read to complete.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (cr ctxReader) Read(p []byte) (int, error) {
+	if err := cr.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return cr.r.Read(p)
 }

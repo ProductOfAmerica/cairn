@@ -1,12 +1,15 @@
 package integration_test
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ProductOfAmerica/cairn/internal/db"
 )
 
 // copyFixture copies every file under testdata/e2e/<fixtureName>/ into dst,
@@ -87,6 +90,40 @@ func stringsContainsAll(s string, subs ...string) bool {
 		}
 	}
 	return true
+}
+
+// mutateOneCell directly UPDATEs a single cell of the state DB. Used by
+// e2e tests to inject substrate-level corruption that no CLI surface can
+// reach (cairn never writes invalid JSON itself, but a hand-edit, partial
+// restore, or future migration regression could produce one). Asserts the
+// UPDATE changed exactly one row so the test fails loudly if the fixture
+// drifts and the WHERE clause stops matching.
+//
+// The table, column, idCol parameters are interpolated via fmt.Sprintf and
+// are SAFE to concatenate ONLY because every callsite passes literal Go
+// string constants — no test input ever flows here. Do NOT call this with
+// values derived from CLI output, files on disk, or other dynamic sources.
+func mutateOneCell(t *testing.T, repoDir, cairnHome, table, column string, value any, idCol, idVal string) {
+	t.Helper()
+	dbPath := resolveStateDBPath(t, repoDir, cairnHome)
+	h, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open %q: %v", dbPath, err)
+	}
+	defer h.Close()
+	stmt := fmt.Sprintf("UPDATE %s SET %s = ? WHERE %s = ?", table, column, idCol)
+	res, err := h.SQL().Exec(stmt, value, idVal)
+	if err != nil {
+		t.Fatalf("exec %q: %v", stmt, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		t.Fatalf("rows affected: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("mutateOneCell: expected 1 row updated, got %d (table=%s %s=%q)",
+			n, table, idCol, idVal)
+	}
 }
 
 // mustEmptyRepo creates a throwaway git repo with no spec files. Callers
