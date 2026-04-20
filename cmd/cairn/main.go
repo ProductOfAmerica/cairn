@@ -40,6 +40,7 @@ func main() {
 
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newInitCmd(app))
+	root.AddCommand(newSetupCmd(app))
 	root.AddCommand(newSpecCmd(app))
 	root.AddCommand(newTaskCmd(app))
 	root.AddCommand(newVerdictCmd(app))

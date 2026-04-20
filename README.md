@@ -25,21 +25,46 @@ Cairn is the missing layer. With cairn, agents can **claim before working, verif
 
 ## Quick start (5 minutes to your first verdict)
 
-### Install
+### Install the CLI
 
 ```bash
 # Requires Go 1.25+ and git
 go install github.com/ProductOfAmerica/cairn/cmd/cairn@latest
 ```
 
+Or via a package manager:
+
+```powershell
+# Windows (scoop)
+scoop bucket add cairn https://github.com/ProductOfAmerica/scoop-cairn
+scoop install cairn
+```
+
+```powershell
+# Windows (winget) — once PR microsoft/winget-pkgs#362607 merges
+winget install ProductOfAmerica.cairn
+```
+
+### Install the Claude Code plugin (one time, per user)
+
+The CLI is useful by itself. The full `brainstorming → plan → YAML → claim → verdict` workflow requires cairn's Claude Code skills, which ship as a plugin. In Claude Code:
+
+```
+/plugin
+```
+
+Add the cairn marketplace: `https://github.com/ProductOfAmerica/cairn`, then enable the cairn plugin. Other agentic harnesses (Cursor, Codex, Gemini, Copilot, OpenCode) can drive the CLI directly — skill-layer wraps for them are tracked in `docs/PLAN.md` (Ship 5+).
+
 ### Initialize state for your repo
 
 ```bash
 cd your-repo/
-cairn init
+cairn setup        # prints Claude Code plugin-install hints + does init
+# or
+cairn init         # state only, no hints
 ```
 
-State lives outside git at `$CAIRN_HOME/<repo-id>/` (defaults: `~/.local/share/cairn/` on Linux, `~/.cairn/` on macOS, `%USERPROFILE%\.cairn\` on Windows). Repo identity is keyed off `git rev-parse --git-common-dir` so worktrees share state.
+`cairn setup` is a convenience over `cairn init`: identical state bootstrap, plus a reminder of the plugin-install step for humans. State lives outside git at `$CAIRN_HOME/<repo-id>/` (defaults: `~/.local/share/cairn/` on Linux, `~/.cairn/` on macOS, `%USERPROFILE%\.cairn\` on Windows). Repo identity is keyed off `git rev-parse --git-common-dir` so worktrees share state.
 
 ### Scaffold spec templates
 
@@ -150,6 +175,7 @@ All commands output JSON. Every mutation accepts `--op-id` for idempotent retry.
 
 ```
 cairn init                                    Scaffold state DB for current repo
+cairn setup                                   init + print Claude Code plugin-install hints
 cairn spec init      [--path specs/] [--force]   Scaffold annotated YAML templates
 cairn spec validate  [--path specs/]             Schema + referential + uniqueness
 cairn task plan                               Materialize specs into state
