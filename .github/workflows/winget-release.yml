@@ -1,8 +1,9 @@
 name: winget-release
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["release"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -11,12 +12,25 @@ on:
 
 jobs:
   publish:
+    # workflow_run fires on success AND failure; only proceed on success.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: windows-latest
     steps:
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            # workflow_run.head_branch is the tag ref name (e.g. v0.4.1) for tag-triggered runs.
+            echo "tag=${{ github.event.workflow_run.head_branch }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: vedantmgoyal2009/winget-releaser@v2
         with:
           identifier: ProductOfAmerica.cairn
           installers-regex: 'cairn_.*_windows_amd64\.zip$'
-          release-tag: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+          release-tag: ${{ steps.tag.outputs.tag }}
           fork-user: ProductOfAmerica
           token: ${{ secrets.WINGET_PAT }}
