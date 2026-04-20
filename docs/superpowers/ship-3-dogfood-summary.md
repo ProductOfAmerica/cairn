@@ -35,7 +35,7 @@ Expected: union of Ship 1 + Ship 2 kinds. No new kinds (per design §7 invariant
 |---|---|
 | deferred-pending-human-session | Autonomous build session — no fresh interactive Claude Code session available. Protocol documented; user runs before merging. |
 
-Full protocol and empty results table: `docs/superpowers/ship-3-dogfood-elicitation-log.md`.
+Full protocol recorded in the Ship 3 design spec §6.3; forcing-test run deferred.
 
 ## §9.10 binary check — were placeholders ever misread as meaningful?
 

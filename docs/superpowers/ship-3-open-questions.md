@@ -1,9 +1,9 @@
 # Ship 3 open questions — design-level input for the next brainstorm
 
 Gaps surfaced during the 2026-04-18 canary that the Ship 2 spec
-doesn't address. **Not ergonomic polish** (those live in
-`ship-3-polish-notes.md`) — these are design-level ambiguities that
-need a decision before a Ship 3 brainstorm can settle scope.
+doesn't address. **Not ergonomic polish** — these are design-level
+ambiguities that need a decision before a Ship 3 brainstorm can
+settle scope.
 
 ## Question 1 — Semantics of `producer_hash` and `inputs_hash`
 
