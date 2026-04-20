@@ -1,7 +1,9 @@
 package integration_test
 
 import (
+	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -105,5 +107,45 @@ func TestSpecInitE2E_OverwritesPlaceholder(t *testing.T) {
 		t.Fatalf("read task: %v", err)
 	} else if string(b) != wantTask {
 		t.Errorf("task content: not byte-equal to canonical template")
+	}
+}
+
+func TestSpecInitE2E_MkdirFailedEnvelope(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "specs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// File blocker at <root>/specs/requirements — forces MkdirAll to ENOTDIR.
+	blocker := filepath.Join(root, "specs", "requirements")
+	if err := os.WriteFile(blocker, []byte("blocker"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	home := t.TempDir()
+	cmd := exec.Command(cairnBinary, "spec", "init", "--path", "specs")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "CAIRN_HOME="+home)
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+	_ = cmd.Run() // non-zero exit expected
+
+	env := parseEnvelope(t, string(bytes.TrimSpace(outBuf.Bytes())))
+	errMap, ok := env["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error envelope, got: %+v", env)
+	}
+	if got, _ := errMap["code"].(string); got != "spec_init_mkdir_failed" {
+		t.Errorf("error.code: got %q, want spec_init_mkdir_failed", got)
+	}
+	details, _ := errMap["details"].(map[string]any)
+	if p, _ := details["path"].(string); p == "" {
+		t.Errorf("details.path: missing")
+	}
+	if _, ok := details["cause"].(string); !ok {
+		t.Errorf("details.cause: missing or not string")
+	}
+	if code := cmd.ProcessState.ExitCode(); code != 4 {
+		t.Errorf("exit code: got %d, want 4 (substrate)", code)
 	}
 }
