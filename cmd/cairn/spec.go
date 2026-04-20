@@ -85,11 +85,7 @@ Flags:
   --force        Overwrite existing .example files.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			os.Exit(cli.Run(cmd.OutOrStdout(), "spec.init", "", func() (any, error) {
-				res, err := cli.SpecInit(initPath, initForce)
-				if err != nil {
-					return nil, cairnerr.New(cairnerr.CodeSubstrate, "init_failed", err.Error()).WithCause(err)
-				}
-				return res, nil
+				return cli.SpecInit(initPath, initForce)
 			}))
 			return nil
 		},
