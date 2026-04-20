@@ -253,3 +253,58 @@ func TestSpecInit_WriteFailedReturnsCairnErr(t *testing.T) {
 		t.Errorf("details.cause: missing or not string")
 	}
 }
+
+func TestSpecInit_WriteUnverifiedReturnsCairnErr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink to /dev/null requires Unix-like FS")
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "specs")
+	for _, sub := range []string{"requirements", "tasks"} {
+		if err := os.MkdirAll(filepath.Join(target, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reqPath := filepath.Join(target, "requirements", "REQ-001.yaml.example")
+	// Symlink -> /dev/null. os.ReadFile returns empty bytes (differ
+	// from template), os.WriteFile follows the symlink and writes to
+	// /dev/null (bytes discarded), verify-read returns empty, bytes
+	// don't match -> spec_init_write_unverified.
+	if err := os.Symlink("/dev/null", reqPath); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := cli.SpecInit(target, false)
+	if err == nil {
+		t.Fatal("SpecInit should have errored on symlink-to-/dev/null")
+	}
+	var ce *cairnerr.Err
+	if !errors.As(err, &ce) {
+		t.Fatalf("error should be *cairnerr.Err, got %T: %v", err, err)
+	}
+	if ce.Kind != "spec_init_write_unverified" {
+		t.Errorf("kind: got %q, want spec_init_write_unverified", ce.Kind)
+	}
+	if ce.Code != cairnerr.CodeSubstrate {
+		t.Errorf("code: got %q, want %q", ce.Code, cairnerr.CodeSubstrate)
+	}
+	if p, ok := ce.Details["path"].(string); !ok || p != reqPath {
+		t.Errorf("details.path: got %v, want %q", ce.Details["path"], reqPath)
+	}
+	expSize, ok := ce.Details["expected_size"].(int)
+	if !ok || expSize == 0 {
+		t.Errorf("details.expected_size: want non-zero int, got %v (type %T)",
+			ce.Details["expected_size"], ce.Details["expected_size"])
+	}
+	gotSize, ok := ce.Details["got_size"].(int)
+	if !ok || gotSize != 0 {
+		t.Errorf("details.got_size: want 0, got %v (type %T)",
+			ce.Details["got_size"], ce.Details["got_size"])
+	}
+	if _, ok := ce.Details["expected_sha256"].(string); !ok {
+		t.Errorf("details.expected_sha256: missing or not string")
+	}
+	if _, ok := ce.Details["got_sha256"].(string); !ok {
+		t.Errorf("details.got_sha256: missing or not string")
+	}
+}

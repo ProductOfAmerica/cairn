@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 
@@ -108,6 +110,32 @@ func SpecInit(root string, force bool) (*SpecInitResult, error) {
 				WithDetails(map[string]any{
 					"path":  p.path,
 					"cause": err.Error(),
+				})
+		}
+		verify, verifyErr := os.ReadFile(p.path)
+		if verifyErr != nil {
+			return nil, cairnerr.New(cairnerr.CodeSubstrate,
+				"spec_init_write_unverified",
+				"template write did not persist on disk; inspect filesystem or sync-engine state").
+				WithCause(verifyErr).
+				WithDetails(map[string]any{
+					"path":          p.path,
+					"expected_size": len(p.body),
+					"cause":         verifyErr.Error(),
+				})
+		}
+		if !bytes.Equal(verify, []byte(p.body)) {
+			wantSum := sha256.Sum256([]byte(p.body))
+			gotSum := sha256.Sum256(verify)
+			return nil, cairnerr.New(cairnerr.CodeSubstrate,
+				"spec_init_write_unverified",
+				"template write did not persist on disk; inspect filesystem or sync-engine state").
+				WithDetails(map[string]any{
+					"path":            p.path,
+					"expected_size":   len(p.body),
+					"got_size":        len(verify),
+					"expected_sha256": hex.EncodeToString(wantSum[:]),
+					"got_sha256":      hex.EncodeToString(gotSum[:]),
 				})
 		}
 		res.Created = append(res.Created, p.path)
