@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -84,10 +85,12 @@ func SpecInit(root string, force bool) (*SpecInitResult, error) {
 		{filepath.Join(root, "tasks", "TASK-001.yaml.example"), taskTemplate},
 	}
 	for _, p := range pairs {
-		if _, err := os.Stat(p.path); err == nil && !force {
+		existing, readErr := os.ReadFile(p.path)
+		if readErr == nil && !force && bytes.Equal(existing, []byte(p.body)) {
 			res.Skipped = append(res.Skipped, p.path)
 			continue
 		}
+		// All other paths (absent, read-error, content-mismatch, force=true) write.
 		if err := os.WriteFile(p.path, []byte(p.body), 0o644); err != nil {
 			return nil, fmt.Errorf("write %s: %w", p.path, err)
 		}

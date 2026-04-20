@@ -103,3 +103,42 @@ func TestSpecInit_CustomPath(t *testing.T) {
 		}
 	}
 }
+
+func TestSpecInit_OverwritesZeroBytePlaceholder(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "specs")
+	for _, sub := range []string{"requirements", "tasks"} {
+		if err := os.MkdirAll(filepath.Join(target, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reqPath := filepath.Join(target, "requirements", "REQ-001.yaml.example")
+	taskPath := filepath.Join(target, "tasks", "TASK-001.yaml.example")
+	// Pre-existing zero-byte predecessors at both template paths —
+	// this is the synthetic reproduction of the OneDrive silent-failure mode.
+	if err := os.WriteFile(reqPath, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(taskPath, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := cli.SpecInit(target, false)
+	if err != nil {
+		t.Fatalf("SpecInit: %v", err)
+	}
+	if len(res.Created) != 2 {
+		t.Fatalf("created: want 2, got %d: %v", len(res.Created), res.Created)
+	}
+	if len(res.Skipped) != 0 {
+		t.Errorf("skipped: want 0, got %v", res.Skipped)
+	}
+
+	wantReq, wantTask := cli.TemplatesForTest()
+	if b, _ := os.ReadFile(reqPath); string(b) != wantReq {
+		t.Errorf("req content: not byte-equal to canonical template")
+	}
+	if b, _ := os.ReadFile(taskPath); string(b) != wantTask {
+		t.Errorf("task content: not byte-equal to canonical template")
+	}
+}
