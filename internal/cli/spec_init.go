@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -102,7 +101,14 @@ func SpecInit(root string, force bool) (*SpecInitResult, error) {
 		}
 		// All other paths (absent, read-error, content-mismatch, force=true) write.
 		if err := os.WriteFile(p.path, []byte(p.body), 0o644); err != nil {
-			return nil, fmt.Errorf("write %s: %w", p.path, err)
+			return nil, cairnerr.New(cairnerr.CodeSubstrate,
+				"spec_init_write_failed",
+				"write template failed").
+				WithCause(err).
+				WithDetails(map[string]any{
+					"path":  p.path,
+					"cause": err.Error(),
+				})
 		}
 		res.Created = append(res.Created, p.path)
 		if force {

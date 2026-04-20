@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/ProductOfAmerica/cairn/internal/cairnerr"
@@ -205,6 +206,48 @@ func TestSpecInit_MkdirFailedReturnsCairnErr(t *testing.T) {
 	}
 	if p, ok := ce.Details["path"].(string); !ok || p != blocker {
 		t.Errorf("details.path: got %v, want %q", ce.Details["path"], blocker)
+	}
+	if _, ok := ce.Details["cause"].(string); !ok {
+		t.Errorf("details.cause: missing or not string")
+	}
+}
+
+func TestSpecInit_WriteFailedReturnsCairnErr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0o444 is a no-op on Windows; write_failed branch not reliably triggerable without FS injection")
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "specs")
+	for _, sub := range []string{"requirements", "tasks"} {
+		if err := os.MkdirAll(filepath.Join(target, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Pre-create the REQ template file with mismatching content AND
+	// read-only mode. ReadFile succeeds (read is allowed by 0o444),
+	// bytes.Equal fails (mismatching content), WriteFile then fails
+	// with EACCES.
+	reqPath := filepath.Join(target, "requirements", "REQ-001.yaml.example")
+	if err := os.WriteFile(reqPath, []byte("# bogus\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := cli.SpecInit(target, false)
+	if err == nil {
+		t.Fatal("SpecInit should have errored on read-only target")
+	}
+	var ce *cairnerr.Err
+	if !errors.As(err, &ce) {
+		t.Fatalf("error should be *cairnerr.Err, got %T: %v", err, err)
+	}
+	if ce.Kind != "spec_init_write_failed" {
+		t.Errorf("kind: got %q, want spec_init_write_failed", ce.Kind)
+	}
+	if ce.Code != cairnerr.CodeSubstrate {
+		t.Errorf("code: got %q, want %q", ce.Code, cairnerr.CodeSubstrate)
+	}
+	if p, ok := ce.Details["path"].(string); !ok || p != reqPath {
+		t.Errorf("details.path: got %v, want %q", ce.Details["path"], reqPath)
 	}
 	if _, ok := ce.Details["cause"].(string); !ok {
 		t.Errorf("details.cause: missing or not string")
