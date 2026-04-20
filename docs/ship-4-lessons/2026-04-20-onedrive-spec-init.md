@@ -3,9 +3,7 @@
 **Date observed:** 2026-04-20
 **Workspace:** `C:\Users\eelwo\OneDrive\Desktop\dreambot-scripts` (Windows, OneDrive-synced)
 **cairn version:** v0.4.0 (between commits `8c5a2fb` and `2ffb449`)
-**Status:** Workaround known (`--force` on first init). Cairn-side fix not yet specified.
-
-> **Next session:** invoke `superpowers:brainstorming` on this file to scope a small fix in cairn itself. See "For the next session" at the bottom for a copy-paste prompt.
+**Status:** Fix landed on branch `fix/onedrive-spec-init` (2026-04-20). See `docs/superpowers/specs/2026-04-20-onedrive-spec-init-fix-design.md` for the design and `docs/superpowers/plans/2026-04-20-onedrive-spec-init-fix.md` for the implementation plan. Content-check skip + post-write verify replaces the `os.Stat` skip; three typed `*cairnerr.Err` kinds (`spec_init_mkdir_failed`, `spec_init_write_failed`, `spec_init_write_unverified`) replace the generic `init_failed` wrapper. `--force` is no longer required for first init over a zero-byte predecessor.
 
 ---
 
