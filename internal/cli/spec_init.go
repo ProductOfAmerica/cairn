@@ -98,3 +98,14 @@ func SpecInit(root string, force bool) (*SpecInitResult, error) {
 	}
 	return res, nil
 }
+
+// TemplatesForTest returns the canonical scaffolding bodies for
+// REQ-001.yaml.example and TASK-001.yaml.example. Exposed so that
+// integration tests in internal/integration can byte-compare
+// disk content against the expected template body without
+// duplicating the literal. The returned strings MUST be treated
+// as read-only; callers must not mutate the underlying backing
+// arrays.
+func TemplatesForTest() (requirement, task string) {
+	return requirementTemplate, taskTemplate
+}
