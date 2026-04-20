@@ -1,0 +1,5 @@
+# cairn-derived: source-hash=cef2aa79b05a81304288b4c4d60d6936d6b32b22ff9bbe02a43c9e020084c139 source-path=docs/superpowers/plans/2026-04-20-onedrive-spec-init-fix.md derived-at=2026-04-20T11:07:43Z
+id: TASK-003-001
+implements: [REQ-003]
+depends_on: []
+required_gates: [AC-003-TEST]
