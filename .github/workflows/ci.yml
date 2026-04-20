@@ -31,39 +31,25 @@ jobs:
       - name: go test
         run: go test -race ./...
 
-  # Invariant 7 proof — offline-capable.
-  #
-  # The prior hangs were caused by golang/go#76375: proxy.golang.org's TLS
-  # handshake stalls indefinitely over IPv6 on some GH runner pools. Go's
-  # net resolver prefers IPv6 by default; the TCP syscall never returns,
-  # step- and job-level timeout-minutes can't deliver kill signals to
-  # kernel-stalled syscalls. Matrix jobs coincidentally landed on pools
-  # with working IPv6; the offline job's pool did not.
-  #
-  # Workaround: disable IPv6 on the runner before any Go network op.
-  # Go falls back to IPv4 cleanly, proxy.golang.org + sum.golang.org
-  # respond, build/test proceed.
+  # Invariant 7 proof — offline-capable. Run the test suite inside a new
+  # user+network namespace so the test process sees zero interfaces while
+  # the runner agent stays on the host network (and can still stream logs
+  # / honor timeouts). The earlier iptables-DROP approach firewalled the
+  # runner itself off from GitHub, stranding every run for ~13 minutes
+  # until the orphan watchdog reaped it.
   offline:
     runs-on: ubuntu-latest
     timeout-minutes: 8
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - name: Disable IPv6 (golang/go#76375 workaround)
-        run: |
-          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
-          sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25.x"
-      - name: Warm up the build cache (no network sever yet)
-        timeout-minutes: 3
+      - name: Fetch modules + warm build cache
         run: go build ./...
-      - name: Test offline (iptables OUTPUT DROP except loopback)
-        timeout-minutes: 4
+      - name: Test offline (unshare --user --net)
+        timeout-minutes: 5
         run: |
-          sudo iptables -I OUTPUT -o lo -j ACCEPT
-          sudo iptables -P OUTPUT DROP
-          # ip6tables skipped — IPv6 already disabled system-wide.
-          GOFLAGS="-mod=readonly" GOSUMDB=off GOPROXY=off \
+          unshare --user --net --map-current-user -- \
+            env GOFLAGS=-mod=readonly GOSUMDB=off GOPROXY=off \
             go test -race ./...
