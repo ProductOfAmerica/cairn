@@ -45,26 +45,21 @@ scoop install cairn
 winget install ProductOfAmerica.cairn
 ```
 
-### Install the Claude Code plugin (one time, per user)
-
-The CLI is useful by itself. The full `brainstorming → plan → YAML → claim → verdict` workflow requires cairn's Claude Code skills, which ship as a plugin. In Claude Code:
-
-```
-/plugin
-```
-
-Add the cairn marketplace: `https://github.com/ProductOfAmerica/cairn`, then enable the cairn plugin. Other agentic harnesses (Cursor, Codex, Gemini, Copilot, OpenCode) can drive the CLI directly — skill-layer wraps for them are tracked in `docs/PLAN.md` (Ship 5+).
-
-### Initialize state for your repo
+### Initialize state + install skills
 
 ```bash
 cd your-repo/
-cairn setup        # prints Claude Code plugin-install hints + does init
-# or
-cairn init         # state only, no hints
+cairn setup           # state bootstrap + installs Claude Code skills
 ```
 
-`cairn setup` is a convenience over `cairn init`: identical state bootstrap, plus a reminder of the plugin-install step for humans. State lives outside git at `$CAIRN_HOME/<repo-id>/` (defaults: `~/.local/share/cairn/` on Linux, `~/.cairn/` on macOS, `%USERPROFILE%\.cairn\` on Windows). Repo identity is keyed off `git rev-parse --git-common-dir` so worktrees share state.
+`cairn setup` does two things:
+
+1. **State bootstrap.** Same as `cairn init` — creates the state DB and content-addressed blob store outside git at `$CAIRN_HOME/<repo-id>/` (defaults: `~/.local/share/cairn/` on Linux, `~/.cairn/` on macOS, `%USERPROFILE%\.cairn\` on Windows). Repo identity is keyed off `git rev-parse --git-common-dir` so worktrees share state.
+2. **Writes cairn's Claude Code skills** to `<repo>/.claude/skills/` — Claude Code auto-loads skills under that path without requiring a `/plugin install` step. Restart Claude Code (or start a new session) and `using-cairn`, `subagent-driven-development-with-verdicts`, and `verdict-backed-verification` are available.
+
+Re-run `cairn setup` safely: state is idempotent, and skill files are skipped if already present. Pass `--force` after upgrading cairn to refresh the skill files.
+
+If you only want the state substrate and intend to register the plugin globally instead, use `cairn init` (state only, no skill writes). Other agentic harnesses (Cursor, Codex, Gemini, Copilot, OpenCode) drive the CLI directly today; skill-layer wraps for them are tracked in `docs/PLAN.md` (Ship 5+).
 
 ### Scaffold spec templates
 
@@ -175,7 +170,7 @@ All commands output JSON. Every mutation accepts `--op-id` for idempotent retry.
 
 ```
 cairn init                                    Scaffold state DB for current repo
-cairn setup                                   init + print Claude Code plugin-install hints
+cairn setup         [--force]                 init + install Claude Code skills into .claude/skills/
 cairn spec init      [--path specs/] [--force]   Scaffold annotated YAML templates
 cairn spec validate  [--path specs/]             Schema + referential + uniqueness
 cairn task plan                               Materialize specs into state
