@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ProductOfAmerica/cairn/internal/cli"
 )
 
 func TestSpecInitE2E(t *testing.T) {
@@ -50,5 +52,58 @@ func TestSpecInitE2E(t *testing.T) {
 	}
 	if len(data3["skipped"].([]any)) != 2 {
 		t.Errorf("second init should skip 2 files: %v", data3["skipped"])
+	}
+}
+
+func TestSpecInitE2E_OverwritesPlaceholder(t *testing.T) {
+	root := t.TempDir()
+	for _, sub := range []string{"requirements", "tasks"} {
+		if err := os.MkdirAll(filepath.Join(root, "specs", sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reqPath := filepath.Join(root, "specs", "requirements", "REQ-001.yaml.example")
+	taskPath := filepath.Join(root, "specs", "tasks", "TASK-001.yaml.example")
+	// The synthetic repro of the OneDrive silent-failure mode.
+	if err := os.WriteFile(reqPath, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(taskPath, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runCLIInDir(t, root, "spec", "init", "--path", "specs")
+	env := parseEnvelope(t, out)
+
+	if env["error"] != nil {
+		t.Fatalf("unexpected error envelope: %v", env["error"])
+	}
+	if kind, _ := env["kind"].(string); kind != "spec.init" {
+		t.Fatalf("envelope kind: got %q, want spec.init", kind)
+	}
+	data, ok := env["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("envelope missing data: %+v", env)
+	}
+	created, _ := data["created"].([]any)
+	if len(created) != 2 {
+		t.Fatalf("created: want 2, got %d: %v", len(created), created)
+	}
+	skipped, _ := data["skipped"].([]any)
+	if len(skipped) != 0 {
+		t.Errorf("skipped: want 0, got %v", skipped)
+	}
+
+	// Byte-for-byte equality to canonical templates.
+	wantReq, wantTask := cli.TemplatesForTest()
+	if b, err := os.ReadFile(reqPath); err != nil {
+		t.Fatalf("read req: %v", err)
+	} else if string(b) != wantReq {
+		t.Errorf("req content: not byte-equal to canonical template")
+	}
+	if b, err := os.ReadFile(taskPath); err != nil {
+		t.Fatalf("read task: %v", err)
+	} else if string(b) != wantTask {
+		t.Errorf("task content: not byte-equal to canonical template")
 	}
 }
