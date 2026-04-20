@@ -7,3 +7,5 @@
 coverage.out
 .cairn/
 .gitnexus
+.claude/settings.local.json
+bash.exe.stackdump
