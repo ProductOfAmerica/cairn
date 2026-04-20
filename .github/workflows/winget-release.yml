@@ -1,0 +1,22 @@
+name: winget-release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.4.1) for manual re-runs"
+        required: true
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: vedantmgoyal2009/winget-releaser@v2
+        with:
+          identifier: ProductOfAmerica.cairn
+          installers-regex: 'cairn_.*_windows_amd64\.zip$'
+          release-tag: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+          fork-user: ProductOfAmerica
+          token: ${{ secrets.WINGET_PAT }}

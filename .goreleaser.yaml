@@ -61,3 +61,19 @@ changelog:
 release:
   draft: false
   prerelease: auto
+
+scoops:
+  - name: cairn
+    repository:
+      owner: ProductOfAmerica
+      name: scoop-cairn
+      branch: main
+      token: "{{ .Env.SCOOP_TAP_GITHUB_TOKEN }}"
+    directory: "."
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "scoop: bump cairn to {{ .Tag }}"
+    homepage: https://github.com/ProductOfAmerica/cairn
+    description: "Verification substrate for AI coding agents — durable memory, append-only verdicts, content-addressed evidence, safe concurrency."
+    license: MIT
