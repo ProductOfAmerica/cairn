@@ -1,10 +1,12 @@
 package cli_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/ProductOfAmerica/cairn/internal/cairnerr"
 	"github.com/ProductOfAmerica/cairn/internal/cli"
 )
 
@@ -169,5 +171,42 @@ func TestSpecInit_OverwritesWrongContent(t *testing.T) {
 	wantReq, _ := cli.TemplatesForTest()
 	if b, _ := os.ReadFile(reqPath); string(b) != wantReq {
 		t.Errorf("req content: should have been restored to canonical template, got %q", string(b))
+	}
+}
+
+func TestSpecInit_MkdirFailedReturnsCairnErr(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "specs")
+	// Create <target>/ itself as a directory.
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-create a FILE at <target>/requirements, blocking MkdirAll.
+	// This is portable: MkdirAll returns ENOTDIR / equivalent on both
+	// Unix and Windows when an existing path component is a file.
+	blocker := filepath.Join(target, "requirements")
+	if err := os.WriteFile(blocker, []byte("blocker"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := cli.SpecInit(target, false)
+	if err == nil {
+		t.Fatal("SpecInit should have errored when MkdirAll is blocked")
+	}
+	var ce *cairnerr.Err
+	if !errors.As(err, &ce) {
+		t.Fatalf("error should be *cairnerr.Err, got %T: %v", err, err)
+	}
+	if ce.Kind != "spec_init_mkdir_failed" {
+		t.Errorf("kind: got %q, want spec_init_mkdir_failed", ce.Kind)
+	}
+	if ce.Code != cairnerr.CodeSubstrate {
+		t.Errorf("code: got %q, want %q", ce.Code, cairnerr.CodeSubstrate)
+	}
+	if p, ok := ce.Details["path"].(string); !ok || p != blocker {
+		t.Errorf("details.path: got %v, want %q", ce.Details["path"], blocker)
+	}
+	if _, ok := ce.Details["cause"].(string); !ok {
+		t.Errorf("details.cause: missing or not string")
 	}
 }

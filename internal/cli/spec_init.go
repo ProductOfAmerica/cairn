@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/ProductOfAmerica/cairn/internal/cairnerr"
 )
 
 // SpecInitResult is returned to the CLI envelope.
@@ -73,8 +75,16 @@ required_gates: [AC-001]
 func SpecInit(root string, force bool) (*SpecInitResult, error) {
 	res := &SpecInitResult{Created: []string{}, Skipped: []string{}}
 	for _, sub := range []string{"requirements", "tasks"} {
-		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
-			return nil, fmt.Errorf("mkdir %s: %w", sub, err)
+		dir := filepath.Join(root, sub)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, cairnerr.New(cairnerr.CodeSubstrate,
+				"spec_init_mkdir_failed",
+				"create spec subdirectory failed").
+				WithCause(err).
+				WithDetails(map[string]any{
+					"path":  dir,
+					"cause": err.Error(),
+				})
 		}
 	}
 	pairs := []struct {
