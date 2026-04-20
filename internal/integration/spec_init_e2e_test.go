@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -144,6 +145,57 @@ func TestSpecInitE2E_MkdirFailedEnvelope(t *testing.T) {
 	}
 	if _, ok := details["cause"].(string); !ok {
 		t.Errorf("details.cause: missing or not string")
+	}
+	if code := cmd.ProcessState.ExitCode(); code != 4 {
+		t.Errorf("exit code: got %d, want 4 (substrate)", code)
+	}
+}
+
+func TestSpecInitE2E_WriteUnverifiedEnvelope(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink to /dev/null requires Unix-like FS")
+	}
+	root := t.TempDir()
+	for _, sub := range []string{"requirements", "tasks"} {
+		if err := os.MkdirAll(filepath.Join(root, "specs", sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reqPath := filepath.Join(root, "specs", "requirements", "REQ-001.yaml.example")
+	if err := os.Symlink("/dev/null", reqPath); err != nil {
+		t.Fatal(err)
+	}
+
+	home := t.TempDir()
+	cmd := exec.Command(cairnBinary, "spec", "init", "--path", "specs")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "CAIRN_HOME="+home)
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+	_ = cmd.Run() // non-zero exit expected
+
+	env := parseEnvelope(t, string(bytes.TrimSpace(outBuf.Bytes())))
+	errMap, ok := env["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error envelope, got: %+v", env)
+	}
+	if got, _ := errMap["code"].(string); got != "spec_init_write_unverified" {
+		t.Errorf("error.code: got %q, want spec_init_write_unverified", got)
+	}
+	details, _ := errMap["details"].(map[string]any)
+	// JSON numbers unmarshal as float64.
+	if got, _ := details["got_size"].(float64); got != 0 {
+		t.Errorf("details.got_size: got %v, want 0", details["got_size"])
+	}
+	if exp, _ := details["expected_size"].(float64); exp == 0 {
+		t.Errorf("details.expected_size: want non-zero, got %v", details["expected_size"])
+	}
+	if s, _ := details["expected_sha256"].(string); s == "" {
+		t.Errorf("details.expected_sha256: missing")
+	}
+	if s, _ := details["got_sha256"].(string); s == "" {
+		t.Errorf("details.got_sha256: missing")
 	}
 	if code := cmd.ProcessState.ExitCode(); code != 4 {
 		t.Errorf("exit code: got %d, want 4 (substrate)", code)
