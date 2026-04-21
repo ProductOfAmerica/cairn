@@ -1,10 +1,20 @@
 {
   "name": "cairn",
   "version": "0.3.0",
-  "description": "Verification substrate for AI-coordinated software development. Ship 3 adds three skills that let Superpowers and cairn cooperate end-to-end.",
-  "skills": [
-    "skills/using-cairn",
-    "skills/subagent-driven-development-with-verdicts",
-    "skills/verdict-backed-verification"
+  "description": "Verification substrate for AI-coordinated software development. Ships three skills (using-cairn, subagent-driven-development-with-verdicts, verdict-backed-verification) that let Superpowers and cairn cooperate end-to-end via claim/evidence/verdict lifecycle.",
+  "author": {
+    "name": "ProductOfAmerica",
+    "url": "https://github.com/ProductOfAmerica"
+  },
+  "homepage": "https://github.com/ProductOfAmerica/cairn",
+  "repository": "https://github.com/ProductOfAmerica/cairn",
+  "license": "MIT",
+  "keywords": [
+    "verification",
+    "evidence",
+    "verdicts",
+    "tdd",
+    "cairn",
+    "substrate"
   ]
 }
