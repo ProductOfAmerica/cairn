@@ -1,21 +1,18 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ProductOfAmerica/cairn/internal/intent"
 )
 
 const fixtureRoot = "testdata/skill-tests/yaml-authoring"
-
-var headerRe = regexp.MustCompile(`^# cairn-derived: source-hash=([a-f0-9]{64}) source-path=(\S+) derived-at=(\S+Z)$`)
 
 type result struct {
 	name string
@@ -71,55 +68,32 @@ func checkAllYAMLHasHeader() result {
 			return nil
 		}
 		body, _ := os.ReadFile(p)
-		first := strings.SplitN(string(body), "\n", 2)[0]
-		if !headerRe.MatchString(first) {
-			errs = append(errs, fmt.Sprintf("%s: first line does not match header regex", p))
+		if _, e := intent.ParseSourceHashHeader(body); e != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", p, e))
 		}
 		return nil
 	})
 	return r("all-yaml-has-header", errs)
 }
 
-func sha256File(p string) (string, error) {
-	f, err := os.Open(p)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-func headerSourceHash(yamlPath string) (string, error) {
-	body, err := os.ReadFile(yamlPath)
-	if err != nil {
-		return "", err
-	}
-	first := strings.SplitN(string(body), "\n", 2)[0]
-	m := headerRe.FindStringSubmatch(first)
-	if m == nil {
-		return "", fmt.Errorf("header missing in %s", yamlPath)
-	}
-	return m[1], nil
-}
-
 func checkSourceHashValid() result {
 	dir := filepath.Join(fixtureRoot, "source-hash-valid")
 	prose := filepath.Join(dir, "design.md")
 	derived := filepath.Join(dir, "derived.yaml")
-	want, err := sha256File(prose)
+	want, err := intent.ComputeSourceHash(prose)
 	if err != nil {
 		return r("source-hash-valid", []string{err.Error()})
 	}
-	got, err := headerSourceHash(derived)
+	body, err := os.ReadFile(derived)
 	if err != nil {
 		return r("source-hash-valid", []string{err.Error()})
 	}
-	if want != got {
-		return r("source-hash-valid", []string{fmt.Sprintf("want %s, got %s", want, got)})
+	h, err := intent.ParseSourceHashHeader(body)
+	if err != nil {
+		return r("source-hash-valid", []string{err.Error()})
+	}
+	if want != h.SourceHash {
+		return r("source-hash-valid", []string{fmt.Sprintf("want %s, got %s", want, h.SourceHash)})
 	}
 	return r("source-hash-valid", nil)
 }
@@ -128,15 +102,22 @@ func checkSourceHashDrift() result {
 	dir := filepath.Join(fixtureRoot, "source-hash-drift")
 	prose := filepath.Join(dir, "design.md")
 	derived := filepath.Join(dir, "derived-stale.yaml")
-	prosehash, err := sha256File(prose)
+	prosehash, err := intent.ComputeSourceHash(prose)
 	if err != nil {
 		return r("source-hash-drift", []string{err.Error()})
 	}
-	header, err := headerSourceHash(derived)
+	body, err := os.ReadFile(derived)
 	if err != nil {
 		return r("source-hash-drift", []string{err.Error()})
 	}
-	if prosehash == header {
+	h, err := intent.ParseSourceHashHeader(body)
+	if err != nil {
+		if errors.Is(err, intent.ErrNoSourceHashHeader) {
+			return r("source-hash-drift", []string{fmt.Sprintf("drift fixture %s missing header", derived)})
+		}
+		return r("source-hash-drift", []string{err.Error()})
+	}
+	if prosehash == h.SourceHash {
 		return r("source-hash-drift", []string{"drift fixture has matching hash; should differ"})
 	}
 	return r("source-hash-drift", nil)
