@@ -47,7 +47,7 @@ post-install guidance on stderr.`,
 				if err != nil {
 					return nil, err
 				}
-				install, err := cli.InstallSkills(cwd, force)
+				install, err := cli.InstallSkills(cwd, force, "")
 				if err != nil {
 					return nil, err
 				}
@@ -68,10 +68,29 @@ post-install guidance on stderr.`,
 }
 
 // printSetupHints writes human-readable post-install guidance to w.
-// Content reflects whether skills were written or already present, so
-// a re-run shows the correct message.
+// Content reflects whether skills were written, already present, or
+// skipped because the cairn plugin is installed globally in Claude Code.
 func printSetupHints(w io.Writer, install *cli.InstallSkillsResult) {
 	fmt.Fprintf(w, "\ncairn state initialized.\n")
+
+	if install.SkippedReason == "global_plugin_detected" {
+		fmt.Fprintf(w, "Detected cairn plugin installed globally in Claude Code.\n")
+		fmt.Fprintf(w, "Skipping local %s install (redundant).\n", install.Root)
+		fmt.Fprintf(w, "Pass --force to install locally anyway (e.g. dev loop on cairn skills source).\n")
+		if len(install.LocalShadow) > 0 {
+			fmt.Fprintf(w, "\nRedundant local skill copies present:\n")
+			for _, p := range install.LocalShadow {
+				fmt.Fprintf(w, "  %s/%s\n", install.Root, p)
+			}
+			fmt.Fprintf(w, "Remove them: rm -rf .claude/skills/{using-cairn,subagent-driven-development-with-verdicts,verdict-backed-verification}\n")
+		}
+		fmt.Fprint(w, `
+Verify:
+  cairn spec validate
+  cairn task list
+`)
+		return
+	}
 
 	if len(install.Written) > 0 {
 		fmt.Fprintf(w, "Installed %d cairn skill file(s) at %s.\n", len(install.Written), install.Root)

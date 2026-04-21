@@ -13,12 +13,18 @@ import (
 // TestSetupE2E exercises "cairn setup": state bootstrap + embedded
 // skill files land under <cwd>/.claude/skills/ so Claude Code
 // auto-discovers them without /plugin install.
+//
+// CLAUDE_HOME is pinned to an isolated tmpdir so the global-plugin
+// detection (added by the setup-detect-global-plugin fix) sees an
+// empty plugin cache, exercising the "no global, install locally"
+// happy path regardless of the host machine's real Claude Code state.
 func TestSetupE2E(t *testing.T) {
 	repo := mustEmptyRepo(t)
 	cairnHome := t.TempDir()
+	claudeHome := t.TempDir()
 
 	// Run 1: fresh project — expect skills to be written.
-	env, stderr := runSetup(t, repo, cairnHome)
+	env, stderr := runSetup(t, repo, cairnHome, claudeHome)
 	if env["kind"] != "setup" {
 		t.Fatalf("kind=%v want setup", env["kind"])
 	}
@@ -68,7 +74,7 @@ func TestSetupE2E(t *testing.T) {
 	}
 
 	// Run 2: re-setup without --force — everything skipped, nothing written.
-	env2, stderr2 := runSetup(t, repo, cairnHome)
+	env2, stderr2 := runSetup(t, repo, cairnHome, claudeHome)
 	skills2, _ := env2["data"].(map[string]any)["skills"].(map[string]any)
 	written2, _ := skills2["written"].([]any)
 	skipped2, _ := skills2["skipped"].([]any)
@@ -83,7 +89,7 @@ func TestSetupE2E(t *testing.T) {
 	}
 
 	// Run 3: --force overwrites.
-	env3, _ := runSetup(t, repo, cairnHome, "--force")
+	env3, _ := runSetup(t, repo, cairnHome, claudeHome, "--force")
 	skills3, _ := env3["data"].(map[string]any)["skills"].(map[string]any)
 	written3, _ := skills3["written"].([]any)
 	if len(written3) == 0 {
@@ -91,14 +97,21 @@ func TestSetupE2E(t *testing.T) {
 	}
 }
 
-// runSetup runs "cairn setup" in dir with CAIRN_HOME set, returns the
-// parsed stdout envelope and the captured stderr.
-func runSetup(t *testing.T, dir, cairnHome string, extraArgs ...string) (map[string]any, string) {
+// runSetup runs "cairn setup" in dir with CAIRN_HOME + CLAUDE_HOME set,
+// returns the parsed stdout envelope and the captured stderr.
+//
+// CLAUDE_HOME pins the Claude Code config dir the subprocess uses for
+// global-plugin detection, so the test is deterministic regardless of
+// whatever the developer's real Claude Code install looks like.
+func runSetup(t *testing.T, dir, cairnHome, claudeHome string, extraArgs ...string) (map[string]any, string) {
 	t.Helper()
 	args := append([]string{"setup"}, extraArgs...)
 	cmd := exec.Command(cairnBinary, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "CAIRN_HOME="+cairnHome)
+	cmd.Env = append(os.Environ(),
+		"CAIRN_HOME="+cairnHome,
+		"CLAUDE_HOME="+claudeHome,
+	)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
