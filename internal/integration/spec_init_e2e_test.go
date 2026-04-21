@@ -1,10 +1,15 @@
 package integration_test
 
 import (
+	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ProductOfAmerica/cairn/internal/cli"
 )
 
 func TestSpecInitE2E(t *testing.T) {
@@ -50,5 +55,149 @@ func TestSpecInitE2E(t *testing.T) {
 	}
 	if len(data3["skipped"].([]any)) != 2 {
 		t.Errorf("second init should skip 2 files: %v", data3["skipped"])
+	}
+}
+
+func TestSpecInitE2E_OverwritesPlaceholder(t *testing.T) {
+	root := t.TempDir()
+	for _, sub := range []string{"requirements", "tasks"} {
+		if err := os.MkdirAll(filepath.Join(root, "specs", sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reqPath := filepath.Join(root, "specs", "requirements", "REQ-001.yaml.example")
+	taskPath := filepath.Join(root, "specs", "tasks", "TASK-001.yaml.example")
+	// The synthetic repro of the OneDrive silent-failure mode.
+	if err := os.WriteFile(reqPath, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(taskPath, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runCLIInDir(t, root, "spec", "init", "--path", "specs")
+	env := parseEnvelope(t, out)
+
+	if env["error"] != nil {
+		t.Fatalf("unexpected error envelope: %v", env["error"])
+	}
+	if kind, _ := env["kind"].(string); kind != "spec.init" {
+		t.Fatalf("envelope kind: got %q, want spec.init", kind)
+	}
+	data, ok := env["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("envelope missing data: %+v", env)
+	}
+	created, _ := data["created"].([]any)
+	if len(created) != 2 {
+		t.Fatalf("created: want 2, got %d: %v", len(created), created)
+	}
+	skipped, _ := data["skipped"].([]any)
+	if len(skipped) != 0 {
+		t.Errorf("skipped: want 0, got %v", skipped)
+	}
+
+	// Byte-for-byte equality to canonical templates.
+	wantReq, wantTask := cli.TemplatesForTest()
+	if b, err := os.ReadFile(reqPath); err != nil {
+		t.Fatalf("read req: %v", err)
+	} else if string(b) != wantReq {
+		t.Errorf("req content: not byte-equal to canonical template")
+	}
+	if b, err := os.ReadFile(taskPath); err != nil {
+		t.Fatalf("read task: %v", err)
+	} else if string(b) != wantTask {
+		t.Errorf("task content: not byte-equal to canonical template")
+	}
+}
+
+func TestSpecInitE2E_MkdirFailedEnvelope(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "specs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// File blocker at <root>/specs/requirements — forces MkdirAll to ENOTDIR.
+	blocker := filepath.Join(root, "specs", "requirements")
+	if err := os.WriteFile(blocker, []byte("blocker"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	home := t.TempDir()
+	cmd := exec.Command(cairnBinary, "spec", "init", "--path", "specs")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "CAIRN_HOME="+home)
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+	_ = cmd.Run() // non-zero exit expected
+
+	env := parseEnvelope(t, string(bytes.TrimSpace(outBuf.Bytes())))
+	errMap, ok := env["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error envelope, got: %+v", env)
+	}
+	if got, _ := errMap["code"].(string); got != "spec_init_mkdir_failed" {
+		t.Errorf("error.code: got %q, want spec_init_mkdir_failed", got)
+	}
+	details, _ := errMap["details"].(map[string]any)
+	if p, _ := details["path"].(string); p == "" {
+		t.Errorf("details.path: missing")
+	}
+	if _, ok := details["cause"].(string); !ok {
+		t.Errorf("details.cause: missing or not string")
+	}
+	if code := cmd.ProcessState.ExitCode(); code != 4 {
+		t.Errorf("exit code: got %d, want 4 (substrate)", code)
+	}
+}
+
+func TestSpecInitE2E_WriteUnverifiedEnvelope(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink to /dev/null requires Unix-like FS")
+	}
+	root := t.TempDir()
+	for _, sub := range []string{"requirements", "tasks"} {
+		if err := os.MkdirAll(filepath.Join(root, "specs", sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reqPath := filepath.Join(root, "specs", "requirements", "REQ-001.yaml.example")
+	if err := os.Symlink("/dev/null", reqPath); err != nil {
+		t.Fatal(err)
+	}
+
+	home := t.TempDir()
+	cmd := exec.Command(cairnBinary, "spec", "init", "--path", "specs")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "CAIRN_HOME="+home)
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+	_ = cmd.Run() // non-zero exit expected
+
+	env := parseEnvelope(t, string(bytes.TrimSpace(outBuf.Bytes())))
+	errMap, ok := env["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error envelope, got: %+v", env)
+	}
+	if got, _ := errMap["code"].(string); got != "spec_init_write_unverified" {
+		t.Errorf("error.code: got %q, want spec_init_write_unverified", got)
+	}
+	details, _ := errMap["details"].(map[string]any)
+	// JSON numbers unmarshal as float64.
+	if got, _ := details["got_size"].(float64); got != 0 {
+		t.Errorf("details.got_size: got %v, want 0", details["got_size"])
+	}
+	if exp, _ := details["expected_size"].(float64); exp == 0 {
+		t.Errorf("details.expected_size: want non-zero, got %v", details["expected_size"])
+	}
+	if s, _ := details["expected_sha256"].(string); s == "" {
+		t.Errorf("details.expected_sha256: missing")
+	}
+	if s, _ := details["got_sha256"].(string); s == "" {
+		t.Errorf("details.got_sha256: missing")
+	}
+	if code := cmd.ProcessState.ExitCode(); code != 4 {
+		t.Errorf("exit code: got %d, want 4 (substrate)", code)
 	}
 }

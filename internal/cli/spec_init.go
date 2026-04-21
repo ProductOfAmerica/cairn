@@ -1,9 +1,13 @@
 package cli
 
 import (
-	"fmt"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+
+	"github.com/ProductOfAmerica/cairn/internal/cairnerr"
 )
 
 // SpecInitResult is returned to the CLI envelope.
@@ -72,8 +76,16 @@ required_gates: [AC-001]
 func SpecInit(root string, force bool) (*SpecInitResult, error) {
 	res := &SpecInitResult{Created: []string{}, Skipped: []string{}}
 	for _, sub := range []string{"requirements", "tasks"} {
-		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
-			return nil, fmt.Errorf("mkdir %s: %w", sub, err)
+		dir := filepath.Join(root, sub)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, cairnerr.New(cairnerr.CodeSubstrate,
+				"spec_init_mkdir_failed",
+				"create spec subdirectory failed").
+				WithCause(err).
+				WithDetails(map[string]any{
+					"path":  dir,
+					"cause": err.Error(),
+				})
 		}
 	}
 	pairs := []struct {
@@ -84,12 +96,47 @@ func SpecInit(root string, force bool) (*SpecInitResult, error) {
 		{filepath.Join(root, "tasks", "TASK-001.yaml.example"), taskTemplate},
 	}
 	for _, p := range pairs {
-		if _, err := os.Stat(p.path); err == nil && !force {
+		existing, readErr := os.ReadFile(p.path)
+		if readErr == nil && !force && bytes.Equal(existing, []byte(p.body)) {
 			res.Skipped = append(res.Skipped, p.path)
 			continue
 		}
+		// All other paths (absent, read-error, content-mismatch, force=true) write.
 		if err := os.WriteFile(p.path, []byte(p.body), 0o644); err != nil {
-			return nil, fmt.Errorf("write %s: %w", p.path, err)
+			return nil, cairnerr.New(cairnerr.CodeSubstrate,
+				"spec_init_write_failed",
+				"write template failed").
+				WithCause(err).
+				WithDetails(map[string]any{
+					"path":  p.path,
+					"cause": err.Error(),
+				})
+		}
+		verify, verifyErr := os.ReadFile(p.path)
+		if verifyErr != nil {
+			return nil, cairnerr.New(cairnerr.CodeSubstrate,
+				"spec_init_write_unverified",
+				"template write did not persist on disk; inspect filesystem or sync-engine state").
+				WithCause(verifyErr).
+				WithDetails(map[string]any{
+					"path":          p.path,
+					"expected_size": len(p.body),
+					"cause":         verifyErr.Error(),
+				})
+		}
+		if !bytes.Equal(verify, []byte(p.body)) {
+			wantSum := sha256.Sum256([]byte(p.body))
+			gotSum := sha256.Sum256(verify)
+			return nil, cairnerr.New(cairnerr.CodeSubstrate,
+				"spec_init_write_unverified",
+				"template write did not persist on disk; inspect filesystem or sync-engine state").
+				WithDetails(map[string]any{
+					"path":            p.path,
+					"expected_size":   len(p.body),
+					"got_size":        len(verify),
+					"expected_sha256": hex.EncodeToString(wantSum[:]),
+					"got_sha256":      hex.EncodeToString(gotSum[:]),
+				})
 		}
 		res.Created = append(res.Created, p.path)
 		if force {
@@ -97,4 +144,15 @@ func SpecInit(root string, force bool) (*SpecInitResult, error) {
 		}
 	}
 	return res, nil
+}
+
+// TemplatesForTest returns the canonical scaffolding bodies for
+// REQ-001.yaml.example and TASK-001.yaml.example. Exposed so that
+// integration tests in internal/integration can byte-compare
+// disk content against the expected template body without
+// duplicating the literal. The returned strings MUST be treated
+// as read-only; callers must not mutate the underlying backing
+// arrays.
+func TemplatesForTest() (requirement, task string) {
+	return requirementTemplate, taskTemplate
 }
