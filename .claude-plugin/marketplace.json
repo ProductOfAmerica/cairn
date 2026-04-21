@@ -1,7 +1,19 @@
 {
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "cairn",
-  "displayName": "cairn",
-  "description": "Standalone verification substrate. Pair with obra/superpowers for end-to-end methodology + verification.",
-  "homepage": "https://github.com/ProductOfAmerica/cairn",
-  "license": "MIT"
+  "description": "Standalone verification substrate for AI-coordinated software development. Pair with obra/superpowers for end-to-end methodology + verification.",
+  "owner": {
+    "name": "ProductOfAmerica",
+    "url": "https://github.com/ProductOfAmerica"
+  },
+  "plugins": [
+    {
+      "name": "cairn",
+      "description": "Verification substrate for AI coding agents: durable memory, append-only verdicts, content-addressed evidence, safe leases. Ships three skills (using-cairn, subagent-driven-development-with-verdicts, verdict-backed-verification) that wrap obra/superpowers with cairn's claim/evidence/verdict lifecycle.",
+      "source": "./",
+      "category": "development",
+      "homepage": "https://github.com/ProductOfAmerica/cairn",
+      "license": "MIT"
+    }
+  ]
 }
