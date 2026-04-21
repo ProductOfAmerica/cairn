@@ -39,7 +39,7 @@ See `hash-placeholders.md` for the recipe and the future-replacement plan.
 
 ## Invocation rule
 
-> This skill MUST be invoked explicitly by the orchestrating session after each of `superpowers:brainstorming` and `superpowers:writing-plans` commits. Do not rely on agent-noticing or auto-triggering — skill discipline failure modes come from implicit invocation.
+> This skill MUST be invoked explicitly by the orchestrating session after each of `superpowers:brainstorming` and `superpowers:writing-plans` commits. Agent-noticing is unreliable. For harness-enforced belt-and-suspenders drift detection, enable the cairn Stop hook via `cairn hook enable`. The hook supplements skill discipline; it does not replace it, and it only catches source-hash drift (not skipped verdicts or orphan claims — those are guaranteed by cairn's mutation path itself).
 
 ## Routing to spokes
 
