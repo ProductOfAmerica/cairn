@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -38,6 +39,12 @@ type FileLock struct {
 func AcquireLock(targetPath string, maxWait time.Duration) (*FileLock, error) {
 	if maxWait <= 0 {
 		maxWait = DefaultLockWait
+	}
+	// Create the target's parent dir if absent so the sidecar lock file
+	// can be opened. Settings.json may not exist yet on a fresh enable,
+	// but mkdir is always safe; Save below also mkdir-alls before write.
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir for lock %s: %w", targetPath, err)
 	}
 	lockPath := targetPath + ".cairn-lock"
 	deadline := time.Now().Add(maxWait)
